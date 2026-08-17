@@ -89,6 +89,19 @@ table.grid tr:hover td{background:var(--bg);}
    mouse (atributo title="..." no próprio <td>, já adicionado onde essa classe é usada). Vale
    pra qualquer coluna com texto que pode ser longo e não pode - por regra - quebrar linha.*/
 .cell-nowrap{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;}
+/* 17/08/2026 — a Ana relatou a tabela "estourando"/distorcendo em zoom de navegador de 90-100%
+   (só ficava correta em 80%). Duas causas de fundo, corrigidas juntas:
+   1) Vários <td class="row-actions"> aplicavam display:flex direto na célula da tabela — isso é
+      um padrão frágil: table-layout:fixed calcula a largura da coluna em %, mas um <td> com
+      display:flex some do fluxo normal de tabela e o navegador pode arredondar essa largura de
+      forma diferente dependendo do zoom/DPI, fazendo os botões "vazarem". Corrigido: os botões
+      agora ficam dentro de uma <div class="row-actions"> normal, dentro do <td> (o <td> continua
+      display:table-cell, só a <div> interna é flex) — layout de tabela sempre estável.
+   2) Rede de segurança: se uma tabela algum dia realmente precisar de mais espaço do que a tela
+      tem (zoom alto, resolução pequena, dado muito longo), ela agora rola horizontalmente DENTRO
+      de si mesma (barra de rolagem só na tabela) em vez de estourar o card/coluna ao lado — nunca
+      mais "distorce" o restante da tela, na pior das hipóteses aparece uma barrinha de rolagem. */
+div:has(> table.grid){overflow-x:auto;}
 /* 13/08/2026 (2ª rodada) — a tentativa anterior de deixar 1 coluna absorver "o espaço sobrando"
    sozinha (via width:100% na 1ª coluna) resolveu o vão antes de "Ações", mas criou um problema
    novo e pior: um retângulo em branco enorme dentro da 1ª coluna (ela apontou como "péssimo",
@@ -3857,10 +3870,10 @@ function renderContasConfig(){
         <td>${c.status==="pendente"
           ? `<span class="pill status-novo" title="${c.motivoPendencia||''}">Pendente</span>`
           : `<span class="pill status-resolvido">Ativa</span>`}</td>
-        <td class="row-actions">
+        <td><div class="row-actions">
           <button class="btn ghost small" type="button" onclick="abrirConfigConta('${c.id}')">Editar</button>
           <button class="btn danger small" type="button" onclick="pedirExclusaoPermanente('conta','${c.id}')">Excluir</button>
-        </td>
+        </div></td>
       </tr>`).join("")}
   </tbody></table>` : `<p class="small-note">Nenhuma conta cadastrada ainda.</p>`;
 }
@@ -4005,13 +4018,13 @@ function renderProjetosConfigList(){
     ${nomes.map(p=>{
       const qtd = recortes.filter(r=>r.projeto===p && r.status!=='excluido').length;
       return `<tr><td>${p}</td><td>${qtd}</td>
-      <td class="row-actions">
+      <td><div class="row-actions">
         <button class="btn gold ghost small" type="button" onclick="abrirConfigProjeto('${p}')">⚙ Canais / renomear</button>
         ${kebabHTML('projcfg-'+p, [
           {label:'Arquivar projeto', onclick:`pedirConfirmacaoExcluirProjeto('${p}')`},
           {label:'Excluir projeto', onclick:`pedirExclusaoPermanente('projeto','${p}')`, danger:true},
         ])}
-      </td></tr>`;
+      </div></td></tr>`;
     }).join("")}
   </tbody></table>` : `<p class="small-note">Nenhum projeto cadastrado ainda.</p>`;
 }
@@ -4042,7 +4055,7 @@ function renderCampanhasConfigList(){
     ${campanhas.map(n=>{
       const qtd = recortes.filter(r=>r.campanha===n && r.status!=='excluido').length;
       return `<tr><td><span class="pill-solid gold">${n}</span></td><td>${qtd}</td>
-        <td class="row-actions"><button class="btn danger small" type="button" onclick="pedirExclusaoPermanente('campanha','${n}')">Excluir</button></td></tr>`;
+        <td><div class="row-actions"><button class="btn danger small" type="button" onclick="pedirExclusaoPermanente('campanha','${n}')">Excluir</button></div></td></tr>`;
     }).join("")}
   </tbody></table>` : `<p class="small-note">Nenhuma campanha cadastrada ainda.</p>`;
 }
@@ -4153,10 +4166,10 @@ function renderEditorViewModal(){
         <td><input id="vf-label" value="${f.label}"></td>
         <td><select id="vf-tipo">${TIPOS_CAMPO_VIEW.map(t=>`<option value="${t}" ${t===f.tipo?'selected':''}>${TIPO_CAMPO_LABEL[t]}</option>`).join("")}</select></td>
         <td><select id="vf-chave" title="Papel semântico deste campo (opcional) — usado para conectar variáveis do template a este campo, mesmo que a view mude o nome técnico da coluna.">${CHAVES_CAMPO.map(c=>`<option value="${c}" ${c===(f.chave||'')?'selected':''}>${CHAVE_CAMPO_LABEL[c]}</option>`).join("")}</select></td>
-        <td class="row-actions">
+        <td><div class="row-actions">
           <button class="btn small" type="button" onclick="salvarCampoViewDraft()">Salvar</button>
           <button class="btn ghost small" type="button" onclick="cancelarCampoViewDraft()">Cancelar</button>
-        </td>
+        </div></td>
       </tr>`;
     }
     return `<tr>
@@ -4164,10 +4177,10 @@ function renderEditorViewModal(){
       <td>${f.label}</td>
       <td>${TIPO_CAMPO_LABEL[f.tipo]||f.tipo}</td>
       <td>${f.chave ? CHAVE_CAMPO_LABEL[f.chave] : '<span class="small-note">—</span>'}</td>
-      <td class="row-actions">
+      <td><div class="row-actions">
         <button class="btn ghost small" type="button" onclick="iniciarEdicaoCampoViewDraft(${idx})">Editar</button>
         <button class="btn danger small" type="button" onclick="pedirExclusaoPermanente('campoDraft',${idx})">Excluir</button>
-      </td>
+      </div></td>
     </tr>`;
   }).join("");
   const novoCampoRow = d.campoFormAberto && d.campoFormAberto.tipo==='novo' ? `
@@ -4176,10 +4189,10 @@ function renderEditorViewModal(){
       <td><input id="vf-label" placeholder="Label exibido"></td>
       <td><select id="vf-tipo">${TIPOS_CAMPO_VIEW.map(t=>`<option value="${t}">${TIPO_CAMPO_LABEL[t]}</option>`).join("")}</select></td>
       <td><select id="vf-chave" title="Papel semântico deste campo (opcional) — usado para conectar variáveis do template a este campo, mesmo que a view mude o nome técnico da coluna.">${CHAVES_CAMPO.map(c=>`<option value="${c}">${CHAVE_CAMPO_LABEL[c]}</option>`).join("")}</select></td>
-      <td class="row-actions">
+      <td><div class="row-actions">
         <button class="btn small" type="button" onclick="salvarCampoViewDraft()">Salvar</button>
         <button class="btn ghost small" type="button" onclick="cancelarCampoViewDraft()">Cancelar</button>
-      </td>
+      </div></td>
     </tr>` : '';
   document.getElementById("editar-view-campos-mount").innerHTML = `
     <table class="grid"><colgroup><col style="width:20%"><col style="width:22%"><col style="width:16%"><col style="width:20%"><col style="width:22%"></colgroup><thead><tr><th>Campo técnico</th><th>Label</th><th>Tipo</th><th>Campo chave</th><th>Ações</th></tr></thead>
