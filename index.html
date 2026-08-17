@@ -82,6 +82,13 @@ table.grid th{text-align:left;color:var(--muted);font-size:10.5px;font-weight:70
 table.grid td{padding:14px 10px;border-bottom:1px solid var(--border);vertical-align:top;word-wrap:break-word;}
 table.grid tr{transition:background var(--ease);}
 table.grid tr:hover td{background:var(--bg);}
+/* REVISÃO (14/08/2026, pedido da Ana): e-mails longos (ex.: contas de envio) quebravam em 2
+   linhas dentro da célula, deixando aquela linha da tabela mais alta que as outras — ela quer
+   toda linha com a mesma altura, sempre, num visual de ferramenta profissional. Em vez de
+   quebrar, o texto agora corta com reticências (…) e fica disponível por completo ao passar o
+   mouse (atributo title="..." no próprio <td>, já adicionado onde essa classe é usada). Vale
+   pra qualquer coluna com texto que pode ser longo e não pode - por regra - quebrar linha.*/
+.cell-nowrap{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;}
 /* 13/08/2026 (2ª rodada) — a tentativa anterior de deixar 1 coluna absorver "o espaço sobrando"
    sozinha (via width:100% na 1ª coluna) resolveu o vão antes de "Ações", mas criou um problema
    novo e pior: um retângulo em branco enorme dentro da 1ª coluna (ela apontou como "péssimo",
@@ -3844,8 +3851,8 @@ function renderConfiguracoes(){
 function renderContasConfig(){
   document.getElementById("contas-config-mount").innerHTML = contas.length ? `<table class="grid"><colgroup><col style="width:22%"><col style="width:28%"><col style="width:16%"><col style="width:12%"><col style="width:22%"></colgroup><thead><tr><th>Conta</th><th>E-mail</th><th>Categoria</th><th>Status</th><th>Ações</th></tr></thead><tbody>
     ${contas.map(c=>`<tr>
-        <td>${c.nome}</td>
-        <td>${c.email}</td>
+        <td class="cell-nowrap" title="${c.nome}">${c.nome}</td>
+        <td class="cell-nowrap" title="${c.email}">${c.email}</td>
         <td>${categoriasConta[c.categoria] ? categoriasConta[c.categoria].label : c.categoria}</td>
         <td>${c.status==="pendente"
           ? `<span class="pill status-novo" title="${c.motivoPendencia||''}">Pendente</span>`
@@ -4297,8 +4304,8 @@ function renderPendentesContasAlerta(pendentesConta){
   card.style.display = "";
   document.getElementById("alertas-pendentes-mount").innerHTML = `<table class="grid"><colgroup><col style="width:18%"><col style="width:24%"><col style="width:40%"><col style="width:18%"></colgroup><thead><tr><th>Conta</th><th>E-mail</th><th>Motivo</th><th></th></tr></thead><tbody>
     ${pendentesConta.map(c=>`<tr>
-      <td>${c.nome}</td>
-      <td>${c.email}</td>
+      <td class="cell-nowrap" title="${c.nome}">${c.nome}</td>
+      <td class="cell-nowrap" title="${c.email}">${c.email}</td>
       <td>${c.motivoPendencia || "Envio ainda não foi habilitado para esta conta."}</td>
       <td><button class="btn gold small" type="button" onclick="irResolverContaPendente('${c.id}')">Resolver</button></td>
     </tr>`).join("")}
