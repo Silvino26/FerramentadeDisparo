@@ -1610,15 +1610,97 @@ document.getElementById('recuperar-senha-form').addEventListener('submit', async
 // (ver carregarTudoDoBanco), o que a tela de Configurações → Views já espera.
 const FIELD_CATALOGS = {};
 
+// REVISÃO (14/08/2026, achado com a Ana testando o recorte Amil Devolução):
+// até aqui cada entrada era só uma string, usada AO MESMO TEMPO como rótulo
+// visível no dropdown e como valor técnico salvo em recorte_filtros.operador
+// e mandado pra Techfy. Isso só funcionava por acidente pros operadores em
+// que rótulo e símbolo técnico são iguais ("=", ">", "<", ">=", "<=") — pra
+// "antes de"/"depois de"/"contém"/"é nulo"/"não é nulo"/"= Não (0)"/"= Sim (1)"
+// a palavra em português ia direto pro filtro técnico, e a Techfy rejeitava
+// (erro real: "...near 'antes'..." pro filtro "UltimoCPCData antes de ...").
+// Agora cada entrada é {label, tecnico[, valorFixo]}: `label` é só o que a
+// pessoa vê no menu; `tecnico` é o que é salvo e mandado pra Techfy (o nó
+// "Montar filtro técnico", no Worker A.2, só concatena — nenhuma tradução
+// acontece lá). `valorFixo` é usado só pelo tipo booleano, pra evitar a
+// pessoa ter que digitar "0"/"1" manualmente depois de já ter escolhido isso
+// no rótulo. Os símbolos de data ("<"/">") são o candidato mais provável pro
+// que a Techfy espera — não testado isoladamente ainda; validar com um
+// disparo de teste antes de confiar em produção. "contém" vira LIKE, mas o
+// front não envolve o valor em '%...%' automaticamente ainda — digitar o
+// coringa manualmente por enquanto, se for usar esse operador.
 const OPERADORES = {
-  texto: ["=","<>","contém","é nulo","não é nulo"],
-  pessoa: ["=","<>","contém"],
-  documento: ["=","<>"],
-  booleano: ["= Não (0)","= Sim (1)"],
-  data: ["=","é nulo","não é nulo","depois de","antes de"],
-  valor: ["=",">","<",">=","<="],
-  numero: ["=",">","<",">=","<="],
+  texto: [
+    {label:"=", tecnico:"="},
+    {label:"<>", tecnico:"<>"},
+    {label:"contém", tecnico:"LIKE"},
+    {label:"é nulo", tecnico:"IS NULL"},
+    {label:"não é nulo", tecnico:"IS NOT NULL"},
+  ],
+  pessoa: [
+    {label:"=", tecnico:"="},
+    {label:"<>", tecnico:"<>"},
+    {label:"contém", tecnico:"LIKE"},
+  ],
+  documento: [
+    {label:"=", tecnico:"="},
+    {label:"<>", tecnico:"<>"},
+  ],
+  booleano: [
+    {label:"= Não (0)", tecnico:"=", valorFixo:"0"},
+    {label:"= Sim (1)", tecnico:"=", valorFixo:"1"},
+  ],
+  data: [
+    {label:"=", tecnico:"="},
+    {label:"é nulo", tecnico:"IS NULL"},
+    {label:"não é nulo", tecnico:"IS NOT NULL"},
+    {label:"depois de", tecnico:">"},
+    {label:"antes de", tecnico:"<"},
+    // REVISÃO (14/08/2026, achado com a Ana): a Techfy aceita filtro em SQL de
+    // verdade (funções GETDATE()/DATEADD()/CAST(), BETWEEN, parênteses) - não é
+    // só comparação com valor fixo. Isso resolve sozinho o problema de "janela
+    // móvel" (ex.: "próximos 19 dias", "últimos 90 dias") que ela levantou: como
+    // GETDATE() é calculado pela própria Techfy a cada consulta, o filtro nunca
+    // fica desatualizado - ninguém precisa voltar todo dia pra editar uma data
+    // fixa. As duas entradas abaixo têm `tecnico` com um molde ("{N}") em vez de
+    // um símbolo puro - "{N}" é substituído pelo número de dias que a pessoa
+    // digitar no campo de valor (ver `condicaoTecnica()` e o nó "Montar filtro
+    // técnico" no Worker A.2, que faz a mesma substituição na hora de montar o
+    // filtro de verdade). Sintaxe confirmada com 2 exemplos reais que a Ana já
+    // usa em produção (recorte Amil "próx. devolução" e a variação "com
+    // desconto") - não é uma sintaxe inventada.
+    {label:"nos últimos N dias", tecnico:">= DATEADD(DAY,-{N},GETDATE())"},
+    {label:"nos próximos N dias", tecnico:"BETWEEN CAST(GETDATE() AS DATE) AND CAST(DATEADD(DAY,{N},GETDATE()) AS DATE)"},
+  ],
+  valor: [
+    {label:"=", tecnico:"="},
+    {label:">", tecnico:">"},
+    {label:"<", tecnico:"<"},
+    {label:">=", tecnico:">="},
+    {label:"<=", tecnico:"<="},
+  ],
+  numero: [
+    {label:"=", tecnico:"="},
+    {label:">", tecnico:">"},
+    {label:"<", tecnico:"<"},
+    {label:">=", tecnico:">="},
+    {label:"<=", tecnico:"<="},
+  ],
 };
+function operadorLabel(ops, tecnico){
+  const found = ops.find(o=>o.tecnico===tecnico);
+  return found ? found.label : tecnico;
+}
+// Monta a condição técnica de UM filtro (campo+operador+valor), incluindo a
+// substituição de "{N}" pro número de dias digitado, nos operadores de janela
+// móvel de data. Espelha exatamente a lógica do nó "Montar filtro técnico" no
+// Worker A.2 - se um dos dois lados mudar, o outro tem que mudar junto, senão
+// o preview daqui mente sobre o que é realmente mandado pra Techfy.
+function condicaoTecnica(f){
+  if(!f.campo || !f.operador) return "";
+  if(f.operador === "IS NULL" || f.operador === "IS NOT NULL") return f.campo+" "+f.operador;
+  if(f.operador.indexOf("{N}") !== -1) return f.valor ? (f.campo+" "+f.operador.replace("{N}", f.valor)) : "";
+  return f.valor ? (f.campo+" "+f.operador+" '"+f.valor+"'") : "";
+}
 
 const VARS_DERIVADAS = {
   pessoa: [
@@ -2445,33 +2527,53 @@ function renderFilterRows(){
   document.getElementById("filter-rows").innerHTML = r.recorte.filtros.map((f,i)=>{
     const tipo = (catalogo.find(x=>x.campo===f.campo)||{}).tipo || "texto";
     const ops = OPERADORES[tipo] || OPERADORES.texto;
+    // Operadores sem valor (IS NULL/IS NOT NULL) e o tipo booleano (valor
+    // já vem embutido no rótulo escolhido, via valorFixo) desabilitam o
+    // campo de valor — evita repetir o bug real que aconteceu com o
+    // recorte da Amil (valor deixado em branco virando o texto "null"
+    // dentro do filtro técnico mandado pra Techfy).
+    const semValor = f.operador === "IS NULL" || f.operador === "IS NOT NULL";
+    const valorEmbutido = tipo === "booleano";
+    const precisaDias = f.operador && f.operador.indexOf("{N}") !== -1;
+    const placeholderValor = semValor ? "(sem valor)" : precisaDias ? "número de dias (ex.: 19)" : "valor (se aplicável)";
     return `
     <div class="filter-row">
       <select onchange="mudarFiltro(${i},'campo',this.value)">
         ${catalogo.map(cc=>`<option value="${cc.campo}" ${cc.campo===f.campo?'selected':''}>${cc.label||cc.campo}</option>`).join("")}
       </select>
       <select onchange="mudarFiltro(${i},'operador',this.value)">
-        ${ops.map(o=>`<option ${o===f.operador?'selected':''}>${o}</option>`).join("")}
+        ${ops.map(o=>`<option value="${o.tecnico}" ${o.tecnico===f.operador?'selected':''}>${o.label}</option>`).join("")}
       </select>
-      <input value="${f.valor||''}" placeholder="valor (se aplicável)" onchange="mudarFiltro(${i},'valor',this.value)">
+      <input value="${f.valor||''}" placeholder="${placeholderValor}" ${(semValor||valorEmbutido)?'disabled':''} onchange="mudarFiltro(${i},'valor',this.value)">
       <button class="btn ghost small" onclick="removerFiltro(${i})" type="button">remover</button>
     </div>`;
   }).join("");
   document.getElementById("filter-preview-string").textContent =
-    r.recorte.filtros.map(f=>f.campo+" "+f.operador+(f.valor?(" '"+f.valor+"'"):"")).join(" AND ") || "(sem filtros)";
+    r.recorte.filtros.map(condicaoTecnica).filter(Boolean).join(" AND ") || "(sem filtros)";
   document.getElementById("filter-preview-label").textContent =
     r.recorte.filtros.map(f=>{
+      const tipo = (catalogo.find(x=>x.campo===f.campo)||{}).tipo || "texto";
+      const ops = OPERADORES[tipo] || OPERADORES.texto;
       const lbl = (catalogo.find(x=>x.campo===f.campo)||{}).label || f.campo;
-      return lbl+" "+f.operador+(f.valor?(" \""+f.valor+"\""):"");
+      return lbl+" "+operadorLabel(ops, f.operador)+(f.valor?(" \""+f.valor+"\""):"");
     }).join(" e ") || "(sem filtros)";
 }
 function mudarFiltro(i, campo, valor){
   const r = recorteAtual();
   r.recorte.filtros[i][campo] = valor;
+  const catalogo = FIELD_CATALOGS[r.recorte.view] || [];
   if(campo === "campo"){
-    const catalogo = FIELD_CATALOGS[r.recorte.view] || [];
     const tipo = (catalogo.find(x=>x.campo===valor)||{}).tipo || "texto";
-    r.recorte.filtros[i].operador = (OPERADORES[tipo]||OPERADORES.texto)[0];
+    const ops = OPERADORES[tipo] || OPERADORES.texto;
+    r.recorte.filtros[i].operador = ops[0].tecnico;
+    r.recorte.filtros[i].valor = ops[0].valorFixo !== undefined ? ops[0].valorFixo : "";
+  }
+  if(campo === "operador"){
+    const tipo = (catalogo.find(x=>x.campo===r.recorte.filtros[i].campo)||{}).tipo || "texto";
+    const ops = OPERADORES[tipo] || OPERADORES.texto;
+    const escolhido = ops.find(o=>o.tecnico===valor);
+    if(valor === "IS NULL" || valor === "IS NOT NULL") r.recorte.filtros[i].valor = "";
+    else if(escolhido && escolhido.valorFixo !== undefined) r.recorte.filtros[i].valor = escolhido.valorFixo;
   }
   marcarSujo();
   renderFilterRows();
@@ -2481,7 +2583,8 @@ document.getElementById("btn-add-filter").addEventListener("click", ()=>{
   const r = recorteAtual();
   const catalogo = FIELD_CATALOGS[r.recorte.view] || [];
   if(!catalogo.length) return;
-  r.recorte.filtros.push({campo:catalogo[0].campo, operador:(OPERADORES[catalogo[0].tipo]||OPERADORES.texto)[0], valor:""});
+  const ops = OPERADORES[catalogo[0].tipo] || OPERADORES.texto;
+  r.recorte.filtros.push({campo:catalogo[0].campo, operador:ops[0].tecnico, valor: ops[0].valorFixo !== undefined ? ops[0].valorFixo : ""});
   marcarSujo();
   renderFilterRows();
 });
