@@ -67,7 +67,7 @@ body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-famil
 .auth-field{margin-bottom:16px;}
 .auth-row-between{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;}
 .auth-row-between label{margin-bottom:0;}
-.auth-link{color:var(--green);font-size:12px;font-weight:500;text-decoration:none;background:none;border:0;cursor:pointer;font:inherit;padding:0;}
+.auth-link{color:var(--green);text-decoration:none;background:none;border:0;cursor:pointer;font:inherit;padding:0;font-size:12px;font-weight:500;}
 .auth-link:hover{text-decoration:underline;}
 .auth-input-wrap{position:relative;}
 .auth-input-wrap input{padding-right:42px;}
@@ -848,9 +848,9 @@ label.check-canal input{width:auto;height:auto;}
     <div class="card">
       <div class="card-head-row">
         <h2>Contas de envio</h2>
-        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-contas', this)">Recolher ▴</button>
+        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-contas', this)">Mostrar ▾</button>
       </div>
-      <div class="collapsible-body" id="body-card-contas">
+      <div class="collapsible-body collapsed" id="body-card-contas">
         <p class="small-note" style="margin-top:0;">Cada conta tem uma categoria, que define os limites diários de envio (ajustáveis abaixo, em "Categorias de conta") — os limites valem por conta × recorte, não como um total único dividido entre todos os recortes que usam a conta.</p>
         <div id="contas-config-mount"></div>
         <button class="btn ghost small" type="button" id="btn-add-conta-config">+ cadastrar nova conta</button>
@@ -871,9 +871,9 @@ label.check-canal input{width:auto;height:auto;}
     <div class="card" id="card-categorias-conta" style="display:none;">
       <div class="card-head-row">
         <h2>Categorias de conta</h2>
-        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-categorias', this)">Recolher ▴</button>
+        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-categorias', this)">Mostrar ▾</button>
       </div>
-      <div class="collapsible-body" id="body-card-categorias">
+      <div class="collapsible-body collapsed" id="body-card-categorias">
         <p class="small-note" style="margin-top:0;">Limites padrão por categoria de conta (Nova/Alerta/Normal).</p>
         <div class="config-card-row" id="categorias-config-mount"></div>
         <div class="row-actions" style="margin-top:14px;">
@@ -884,9 +884,9 @@ label.check-canal input{width:auto;height:auto;}
     <div class="card">
       <div class="card-head-row">
         <h2>Projetos</h2>
-        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-projetos', this)">Recolher ▴</button>
+        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-projetos', this)">Mostrar ▾</button>
       </div>
-      <div class="collapsible-body" id="body-card-projetos">
+      <div class="collapsible-body collapsed" id="body-card-projetos">
         <div id="projetos-config-mount"></div>
         <button class="btn ghost small" type="button" id="btn-add-projeto-config">+ novo projeto</button>
         <div class="conta-new-form" id="projeto-config-new-form" style="display:none;">
@@ -901,9 +901,9 @@ label.check-canal input{width:auto;height:auto;}
     <div class="card">
       <div class="card-head-row">
         <h2>Campanhas</h2>
-        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-campanhas', this)">Recolher ▴</button>
+        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-campanhas', this)">Mostrar ▾</button>
       </div>
-      <div class="collapsible-body" id="body-card-campanhas">
+      <div class="collapsible-body collapsed" id="body-card-campanhas">
         <div id="campanhas-config-mount"></div>
         <button class="btn ghost small" type="button" id="btn-add-campanha-config">+ cadastrar nova campanha</button>
         <div class="conta-new-form" id="campanha-config-new-form" style="display:none;">
@@ -918,9 +918,9 @@ label.check-canal input{width:auto;height:auto;}
     <div class="card">
       <div class="card-head-row">
         <h2>Views (campos do CRM)</h2>
-        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-views', this)">Recolher ▴</button>
+        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-views', this)">Mostrar ▾</button>
       </div>
-      <div class="collapsible-body" id="body-card-views">
+      <div class="collapsible-body collapsed" id="body-card-views">
         <p class="small-note" style="margin-top:0;">Fonte de dados do CRM (planilha/export do Alfredo).</p>
         <div id="views-config-mount"></div>
         <button class="btn ghost small" type="button" onclick="abrirEditorView(null)">+ adicionar view</button>
@@ -929,9 +929,9 @@ label.check-canal input{width:auto;height:auto;}
     <div class="card">
       <div class="card-head-row">
         <h2>Calendário operacional</h2>
-        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-calendario', this)">Recolher ▴</button>
+        <button class="card-collapse-btn" type="button" onclick="toggleCollapsible('body-card-calendario', this)">Mostrar ▾</button>
       </div>
-      <div class="collapsible-body" id="body-card-calendario">
+      <div class="collapsible-body collapsed" id="body-card-calendario">
         <div id="calendario-mount"></div>
         <button class="btn ghost small" type="button" id="btn-add-bloqueio-global">+ adicionar bloqueio</button>
       </div>
@@ -2245,6 +2245,8 @@ document.addEventListener("click", (e)=>{
 let projetosAbertos = {};
 let historicoProjetosAbertos = {};
 function toggleHistoricoProjeto(nome){ historicoProjetosAbertos[nome] = !historicoProjetosAbertos[nome]; renderHistorico(); }
+let historicoIndividuaisAberto = false;
+function toggleHistoricoIndividuais(){ historicoIndividuaisAberto = !historicoIndividuaisAberto; renderHistorico(); }
 
 /* ==================== MENU "⋮" (kebab) — substitui clusters de botões em linhas de lista ==================== */
 let kebabAbertoId = null;
@@ -3774,10 +3776,25 @@ function renderHistorico(){
     </div>`;
   }).join("") : `<p class="small-note">Nenhum projeto arquivado.</p>`;
 
-  html += `<h4>Recortes arquivados individualmente</h4>`;
-  html += individuais.length ? `<table class="grid"><colgroup><col style="width:22%"><col style="width:24%"><col style="width:24%"><col style="width:30%"></colgroup><thead><tr><th>Projeto</th><th>Recorte</th><th>Campanha</th><th></th></tr></thead><tbody>
+  const tabelaIndividuais = `<table class="grid" style="margin:0 18px 12px;width:calc(100% - 36px);"><colgroup><col style="width:22%"><col style="width:24%"><col style="width:24%"><col style="width:30%"></colgroup><thead><tr><th>Projeto</th><th>Recorte</th><th>Campanha</th><th></th></tr></thead><tbody>
     ${individuais.map(r=>`<tr><td>${r.projeto}</td><td>${r.nomeRecorte}</td><td>${r.campanha||'—'}</td><td><button class="btn ghost small" type="button" onclick="restaurarRecorte('${r.id}')">Restaurar</button></td></tr>`).join("")}
-  </tbody></table>` : `<p class="small-note">Nenhum recorte arquivado individualmente (projeto ainda ativo).</p>`;
+  </tbody></table>`;
+  if(individuais.length > 1){
+    const aberto = historicoIndividuaisAberto;
+    html += `
+    <div class="proj-group ${aberto?'open':''}" style="margin-bottom:10px;">
+      <div class="proj-head" onclick="toggleHistoricoIndividuais()">
+        <div><h3>Recortes arquivados individualmente</h3><div class="proj-meta">${individuais.length} recorte(s) arquivado(s)</div></div>
+        <div class="proj-head-actions">
+          <span class="chev-label">${aberto ? 'Fechar ▾' : 'Ver recortes ▸'}</span>
+        </div>
+      </div>
+      <div class="proj-body">${tabelaIndividuais}</div>
+    </div>`;
+  } else {
+    html += `<h4>Recortes arquivados individualmente</h4>`;
+    html += individuais.length ? tabelaIndividuais : `<p class="small-note">Nenhum recorte arquivado individualmente (projeto ainda ativo).</p>`;
+  }
 
   document.getElementById("historico-mount").innerHTML = html;
 }
