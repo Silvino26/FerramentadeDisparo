@@ -358,6 +358,7 @@ textarea{height:auto;min-height:70px;padding:10px 11px;resize:vertical;}
 .stat-box.info .label::before{background:var(--muted-2);}
 .sample-card{border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;font-size:12.5px;}
 .sample-card b{color:var(--green-dark);}
+.test-preview-frame{display:block;width:100%;height:340px;border:1px solid var(--border);border-radius:8px;margin-top:8px;background:#fff;}
 .wizard-steps{display:flex;gap:8px;margin-bottom:22px;}
 .wizard-steps div{flex:1;text-align:center;padding:9px 0;border-radius:8px;background:#eef2f0;font-size:11.5px;font-weight:700;color:var(--muted);}
 .wizard-steps div.active{background:var(--green);color:#fff;}
@@ -531,7 +532,7 @@ label.check-canal input{width:auto;height:auto;}
     </div>
     <div class="auth-copy">
       <span class="kicker">Cobrança que funciona</span>
-      <h2>Toda a estratégia de cobrança por e-mail, num só lugar.</h2>
+      <h2>Estratégia de cobrança por e-mail, num só lugar.</h2>
     </div>
     <div aria-hidden="true"></div>
     <div class="auth-dots"></div>
@@ -1002,7 +1003,7 @@ label.check-canal input{width:auto;height:auto;}
 <div class="modal-overlay" id="modal-test">
   <div class="modal-box">
     <h3>Disparo de teste</h3>
-    <p class="sub" style="margin-top:0;">Simulação — nenhum e-mail real é enviado neste protótipo.</p>
+    <p class="sub" style="margin-top:0;">Consulta real ao CRM com o filtro deste recorte. Nenhum dado é gravado em fila_disparo nem afeta os disparos reais — só o e-mail de teste (se você clicar em enviar) sai de verdade, sempre para o seu próprio e-mail.</p>
     <div id="test-content"></div>
     <div class="footer-actions">
       <button class="btn ghost" id="btn-fechar-teste" type="button">Fechar</button>
@@ -1168,6 +1169,11 @@ label.check-canal input{width:auto;height:auto;}
 // de ficar aqui só porque o RLS (01c_migracao_incremental_front_painel.sql)
 // exige usuário autenticado pra ler/escrever qualquer tabela.
 const SUPABASE_URL = 'https://wrkukfaawoovofipmqub.supabase.co';
+// Base do n8n — só usada pelo "Testar recorte + template" (webhooks dedicados, ver
+// "Motor Genérico - T - Testar Recorte (sob demanda)"). O motor de disparo real (Dispatcher/
+// Worker A e B) não é chamado pelo front em nenhum outro ponto.
+const N8N_BASE_URL = 'https://n8n.srv1000189.hstgr.cloud';
+const TESTE_EMAIL_DESTINO_LABEL = 'ana.silvino@grupoasserth.com.br';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indya3VrZmFhd29vdm9maXBtcXViIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYzNzQxNjcsImV4cCI6MjEwMTk1MDE2N30.aCzcOGPCdhnTmN7ZTc6xHpdTxBLw68vqtTAnvTMrXlI';
 
 if(!window.supabase){
@@ -3540,28 +3546,144 @@ function atualizarValidacaoTemplate(){
   }
 }
 
-/* ==================== TESTE / APROVAÇÃO ==================== */
+/* ==================== TESTE / APROVAÇÃO ====================
+   "Testar recorte + template" ativo de verdade (pedido da Ana, 08/09/2026): chama um webhook
+   dedicado no n8n ("Motor Genérico - T - Testar Recorte") que consulta o CRM (Techfy) com o
+   filtro real deste recorte e renderiza o template em rascunho contra dados reais — sem nunca
+   escrever em fila_disparo/execucoes nem tocar no motor de disparo de verdade (Dispatcher/Worker
+   A e B). A consulta ao CRM pode demorar (o mesmo endpoint real tem timeout de até 15min) ou
+   falhar por instabilidade/filtro inválido — por isso o resultado chega por polling numa tabela
+   (recorte_testes), nunca por uma chamada HTTP síncrona que travaria a tela. */
 
-document.getElementById("btn-testar").addEventListener("click", ()=>{
-  const r = recorteAtual();
-  const qtd = 40 + Math.floor(Math.random()*90);
+let testeAtualId = null;
+let testePollTimer = null;
+let testeInicioMs = null;
+let testeResultadoAtual = null; // {total_registros, total_emails_validos, amostras:[...]} — usado pelo "Enviar e-mail de teste"
+
+function pararPollingTeste(){ if(testePollTimer){ clearInterval(testePollTimer); testePollTimer = null; } }
+
+function montarPayloadTeste(r, testeId){
+  const etapa = etapaAtual();
+  const contaPrincipal = (r.contaIds||[]).map(id=>contas.find(c=>c.id===id)).find(Boolean);
+  const canaisDoProjeto = (projetosConfig[r.projeto] && projetosConfig[r.projeto].canais) || [];
+  const blocos = (etapa.blocosRascunho || etapa.blocosProducao || []).map(b=>blocoFrontParaBanco(b));
+  return {
+    teste_id: testeId,
+    recorte_id: recorteEditIsNew ? null : r.id,
+    projeto_nome: r.projeto,
+    view_nome_tecnico: r.recorte.view || '',
+    tipo_acao: r.tipoAcao || 'email',
+    recorte_filtros: (r.recorte.filtros||[]).map(f=>({campo_tecnico:f.campo, operador:f.operador, valor:f.valor})),
+    assunto_email: etapa.assunto || '',
+    template_blocos: blocos,
+    canais_atendimento: canaisDoProjeto.map(c=>({id:c.id, ordem:0, nome_exibicao:c.label, valor:c.valor, icone:c.icone})),
+    conta_email: contaPrincipal ? contaPrincipal.email : '',
+  };
+}
+
+function renderTesteProcessando(segundos){
+  let aviso = 'Consultando o CRM (Techfy) com o filtro deste recorte — isso pode levar de alguns segundos a alguns minutos, dependendo do volume.';
+  if(segundos > 150) aviso = 'Ainda buscando — está demorando mais que o normal. Pode ser um filtro pesado ou instabilidade da API do CRM agora. Você pode continuar aguardando, ou fechar e tentar de novo daqui a pouco.';
+  else if(segundos > 45) aviso = 'Ainda buscando no CRM... recortes com filtros mais amplos podem demorar alguns minutos.';
   document.getElementById("test-content").innerHTML = `
+    <div class="stat-row"><div class="stat-box"><div class="num">···</div><div class="label">consultando o CRM</div></div></div>
+    <p class="small-note">${aviso}</p>`;
+  document.getElementById("btn-enviar-teste").disabled = true;
+}
+function renderTesteErro(erro){
+  testeResultadoAtual = null;
+  document.getElementById("test-content").innerHTML = `
+    <div class="callout-dark red">${erro}</div>
+    <p class="small-note" style="margin-top:10px;">Ajuste o filtro/view do recorte (ou tente de novo, se for instabilidade momentânea) e clique em "Testar recorte + template" outra vez.</p>`;
+  document.getElementById("btn-enviar-teste").disabled = true;
+}
+function renderTesteConcluido(resultado){
+  testeResultadoAtual = resultado;
+  const amostras = resultado.amostras || [];
+  let html = `
     <div class="stat-row">
-      <div class="stat-box"><div class="num">${qtd}</div><div class="label">registros no recorte</div></div>
-      <div class="stat-box"><div class="num">${Math.max(1,Math.round(qtd*0.94))}</div><div class="label">e-mails válidos</div></div>
-      <div class="stat-box"><div class="num">${r.cadencia.etapas.length}</div><div class="label">etapa(s) de cadência</div></div>
-    </div>
-    <p class="small-note" style="margin-bottom:10px;">Amostra de casos reais (simulados) já renderizados com o template em rascunho da etapa selecionada:</p>
-    <div class="sample-card"><b>Maria S.</b> (PF, 11 díg.) — doc. mascarado 123.***.***-45, venc. 12/08/2026, R$ 842,10 — assunto: "${etapaAtual().assunto}"</div>
-    <div class="sample-card"><b>Comércio ABC Ltda</b> (PJ, 14 díg. → usa razão social) — doc. mascarado 12.***.***/**-90, venc. 15/08/2026, R$ 3.410,00 — mesmo assunto</div>
-    <p class="small-note">O e-mail de teste abaixo vai para um endereço fixo — não para os clientes reais deste recorte.</p>
-  `;
+      <div class="stat-box"><div class="num">${resultado.total_registros ?? 0}</div><div class="label">registros no recorte</div></div>
+      <div class="stat-box"><div class="num">${resultado.total_emails_validos ?? 0}</div><div class="label">e-mails válidos</div></div>
+      <div class="stat-box"><div class="num">${amostras.length}</div><div class="label">cenário(s) de amostra</div></div>
+    </div>`;
+  if(!amostras.length){
+    html += `<p class="small-note">Nenhum registro com e-mail válido foi encontrado para este filtro — não há amostra pra mostrar (os números acima já refletem o filtro real, mesmo assim).</p>`;
+  } else {
+    html += `<p class="small-note" style="margin-bottom:10px;">Amostra(s) real(is) — já renderizada(s) com o template em rascunho da etapa selecionada:</p>`;
+    amostras.forEach(a=>{
+      html += `
+        <div class="sample-card">
+          <b>${a.nome_exibicao||'(sem nome)'}</b> (${a.tipo||''}) — doc. mascarado ${a.documento_mascarado||'—'}, ${a.valor_formatado||''} — assunto: "${a.assunto_email||''}"
+          <iframe class="test-preview-frame" sandbox="" srcdoc="${(a.emailbody||'').replace(/"/g,'&quot;')}"></iframe>
+        </div>`;
+    });
+    html += `<p class="small-note">Ao clicar em "Enviar e-mail de teste" abaixo, o(s) e-mail(s) acima saem de verdade para ${TESTE_EMAIL_DESTINO_LABEL} — nunca para os clientes reais deste recorte.</p>`;
+  }
+  document.getElementById("test-content").innerHTML = html;
+  document.getElementById("btn-enviar-teste").disabled = !amostras.length;
+}
+async function checarStatusTeste(testeId){
+  const { data, error } = await db.from('recorte_testes').select('*').eq('id', testeId).maybeSingle();
+  if(error){ console.error(error); return; }
+  if(!data) return;
+  if(data.status === 'processando'){ renderTesteProcessando(Math.floor((Date.now()-testeInicioMs)/1000)); return; }
+  pararPollingTeste();
+  if(data.status === 'concluido') renderTesteConcluido(data.resultado || {});
+  else renderTesteErro(data.erro || 'Erro não informado.');
+}
+
+document.getElementById("btn-testar").addEventListener("click", async ()=>{
+  const r = recorteAtual();
+  if(!r.recorte.view){ mostrarToast('Selecione uma view antes de testar.'); return; }
+  if(etapasSemTemplate().includes(etapaAtual())){ mostrarToast('Configure pelo menos 1 bloco de template nesta etapa antes de testar.'); return; }
+  pararPollingTeste();
+  testeResultadoAtual = null;
+  const testeId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('teste-'+Date.now()+'-'+Math.random().toString(36).slice(2));
+  testeAtualId = testeId;
+  testeInicioMs = Date.now();
+  const avisoBoletagem = r.tipoAcao === 'email_boletagem'
+    ? `<div class="callout-dark" style="margin-bottom:12px;">Este recorte usa boletagem — o motor de boletagem (gerar acordo/boleto) ainda não está implementado. Este teste simula só a parte de e-mail, sem anexo real de boleto.</div>`
+    : '';
+  document.getElementById("test-content").innerHTML = avisoBoletagem + `<p class="small-note">Iniciando consulta...</p>`;
+  document.getElementById("btn-enviar-teste").disabled = true;
   document.getElementById("modal-test").classList.add("open");
+  try {
+    const payload = montarPayloadTeste(r, testeId);
+    await fetch(N8N_BASE_URL + '/webhook/testar-recorte', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+  } catch(e){
+    console.error(e);
+    renderTesteErro('Não foi possível acionar o teste agora (falha de rede ao chamar o n8n). Tente de novo em instantes.');
+    return;
+  }
+  testePollTimer = setInterval(()=>checarStatusTeste(testeId), 2500);
+  checarStatusTeste(testeId);
 });
-document.getElementById("btn-fechar-teste").addEventListener("click", ()=> document.getElementById("modal-test").classList.remove("open"));
-document.getElementById("btn-enviar-teste").addEventListener("click", ()=>{
+document.getElementById("btn-fechar-teste").addEventListener("click", ()=>{
+  pararPollingTeste();
   document.getElementById("modal-test").classList.remove("open");
-  mostrarToast("E-mail de teste enviado para teste.disparos@grupoasserth.com.br (simulado)");
+});
+document.getElementById("btn-enviar-teste").addEventListener("click", async ()=>{
+  const amostras = (testeResultadoAtual && testeResultadoAtual.amostras) || [];
+  if(!amostras.length || !testeAtualId) return;
+  const btn = document.getElementById("btn-enviar-teste");
+  btn.disabled = true; const textoOriginal = btn.textContent; btn.textContent = 'Enviando...';
+  let sucesso = 0, falha = 0, erros = [];
+  for(let i=0;i<amostras.length;i++){
+    try {
+      const resp = await fetch(N8N_BASE_URL + '/webhook/testar-recorte-enviar', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({teste_id: testeAtualId, amostra_index: i})
+      });
+      const j = await resp.json().catch(()=>({}));
+      if(j && j.enviado) sucesso++; else { falha++; if(j && j.erro) erros.push(j.erro); }
+    } catch(e){ falha++; erros.push(String(e.message||e)); }
+  }
+  btn.disabled = false; btn.textContent = textoOriginal;
+  if(sucesso && !falha) mostrarToast(`E-mail(s) de teste enviado(s) (${sucesso}) para ${TESTE_EMAIL_DESTINO_LABEL} — confira sua caixa de entrada.`);
+  else if(sucesso && falha) mostrarToast(`${sucesso} enviado(s), ${falha} falhou(aram). ${erros[0]||''}`);
+  else mostrarToast(`Não foi possível enviar o(s) e-mail(s) de teste. ${erros[0]||''}`);
 });
 
 document.getElementById("btn-publicar").addEventListener("click", ()=>{
