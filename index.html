@@ -3625,6 +3625,13 @@ function montarPayloadTeste(r, testeId){
     assunto: e.assunto || '',
     blocos: (e.blocosRascunho || e.blocosProducao || []).map(b=>blocoFrontParaBanco(b)),
   })).filter(e=>e.blocos.length);
+  // REVISÃO (09/09/2026, pedido da Ana): manda o catálogo de campos (por chave semântica) desta
+  // view junto do payload, reaproveitando o que o front já tem carregado em FIELD_CATALOGS
+  // (Configurações -> Views) — o workflow de teste "Testar recorte" agora resolve os campos de
+  // forma 100% dinâmica via chave, igual ao Worker A.2/B.2 real, em vez de nomes de coluna fixos.
+  const camposDaView = (FIELD_CATALOGS[r.recorte.view] || []).map(f => ({
+    campo_tecnico: f.campo, tipo: f.tipo, chave: f.chave || '',
+  }));
   return {
     teste_id: testeId,
     recorte_id: recorteEditIsNew ? null : r.id,
@@ -3635,6 +3642,7 @@ function montarPayloadTeste(r, testeId){
     etapas,
     canais_atendimento: canaisDoProjeto.map(c=>({id:c.id, ordem:0, nome_exibicao:c.label, valor:c.valor, icone:c.icone})),
     conta_email: contaPrincipal ? contaPrincipal.email : '',
+    campos_view: camposDaView,
   };
 }
 
@@ -3743,8 +3751,14 @@ async function iniciarTesteCompletoRecorte(){
   // REVISÃO 09/09/2026: valida em cima do payload de verdade (todas as etapas da cadência
   // com template configurado), não só a etapa selecionada no editor no momento do clique.
   if(!payload.etapas.length){ mostrarToast('Configure pelo menos 1 bloco de template em alguma etapa antes de testar.'); return; }
+  // REVISÃO (09/09/2026, pedido da Ana): "Testar recorte" agora exercita a pipeline de
+  // boletagem DE VERDADE (mesma chamada real "Gerar Acordo" da TechFy usada em produção) para
+  // validar o processo ponta a ponta — deixou de ser uma simulação só da parte de e-mail. Por
+  // isso o aviso precisa deixar claro que isso GERA UM ACORDO REAL na TechFy, vinculado ao
+  // título real do(s) cliente(s) sorteado(s) como amostra — mesmo sendo só um teste, o e-mail
+  // final continua indo só para o endereço de teste, nunca para o cliente.
   const avisoBoletagem = ehTipoAcaoBoletagem(r.tipoAcao)
-    ? `<div class="callout-dark" style="margin-bottom:12px;">Este recorte usa boletagem — este teste (rápido, avulso) simula só a parte de e-mail, sem gerar acordo/boleto de verdade nem anexo real. O disparo real, esse sim, gera o boleto de verdade e anexa antes de enviar.</div>`
+    ? `<div class="callout-dark" style="margin-bottom:12px;"><b>Atenção:</b> este recorte usa boletagem — este teste chama a API real da TechFy (a mesma do disparo em produção) e <b>gera um acordo/boleto de verdade</b>, vinculado ao título real do(s) cliente(s) sorteado(s) como amostra (até 2, um CPF e um CNPJ). Não é uma simulação. O boleto gerado é anexado de verdade ao e-mail de teste, mas o e-mail em si continua indo só para ${TESTE_EMAIL_DESTINO_LABEL} — nunca para o cliente. Evite rodar o teste repetidas vezes no mesmo recorte sem necessidade, já que cada execução cria um novo acordo na TechFy.</div>`
     : '';
   document.getElementById("test-content").innerHTML = avisoBoletagem + `<p class="small-note">Iniciando consulta...</p>`;
   document.getElementById("btn-enviar-teste").disabled = true;
