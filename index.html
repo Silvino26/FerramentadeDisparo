@@ -1017,7 +1017,8 @@ label.check-canal input{width:auto;height:auto;}
     <div id="test-content"></div>
     <div class="footer-actions">
       <button class="btn ghost" id="btn-fechar-teste" type="button">Fechar</button>
-      <button class="btn" id="btn-enviar-teste" type="button">Enviar e-mail de teste</button>
+      <button class="btn ghost" id="btn-atualizar-templates" type="button" disabled title="Reaproveita o mesmo lote já buscado no CRM e só re-renderiza os templates atuais — sem consultar o CRM de novo.">↻ Atualizar templates (sem consultar o CRM)</button>
+      <button class="btn" id="btn-enviar-teste" type="button">Enviar todos os e-mails de teste</button>
     </div>
   </div>
 </div>
@@ -3601,11 +3602,21 @@ let testeResultadoAtual = null; // {total_registros, total_emails_validos, amost
 
 function pararPollingTeste(){ if(testePollTimer){ clearInterval(testePollTimer); testePollTimer = null; } }
 
+// REVISÃO (09/09/2026, pedido da Ana): uma cadência tem várias etapas (vários templates) —
+// testar precisa validar TODAS elas contra o MESMO lote buscado no CRM, não só a etapa
+// selecionada no editor no momento do clique. Etapas sem nenhum bloco de template configurado
+// ainda são puladas (nada pra renderizar ali). O mesmo payload serve tanto pra
+// "/webhook/testar-recorte" (consulta o CRM) quanto pra "/webhook/testar-recorte-rerender"
+// (reaproveita o lote já buscado, só re-renderiza) — os campos extras que um dos dois não usa
+// são simplesmente ignorados do lado de lá.
 function montarPayloadTeste(r, testeId){
-  const etapa = etapaAtual();
   const contaPrincipal = (r.contaIds||[]).map(id=>contas.find(c=>c.id===id)).find(Boolean);
   const canaisDoProjeto = (projetosConfig[r.projeto] && projetosConfig[r.projeto].canais) || [];
-  const blocos = (etapa.blocosRascunho || etapa.blocosProducao || []).map(b=>blocoFrontParaBanco(b));
+  const etapas = (r.cadencia.etapas||[]).map((e,idx)=>({
+    etapa_index: idx,
+    assunto: e.assunto || '',
+    blocos: (e.blocosRascunho || e.blocosProducao || []).map(b=>blocoFrontParaBanco(b)),
+  })).filter(e=>e.blocos.length);
   return {
     teste_id: testeId,
     recorte_id: recorteEditIsNew ? null : r.id,
@@ -3613,8 +3624,7 @@ function montarPayloadTeste(r, testeId){
     view_nome_tecnico: r.recorte.view || '',
     tipo_acao: r.tipoAcao || 'email',
     recorte_filtros: (r.recorte.filtros||[]).map(f=>({campo_tecnico:f.campo, operador:f.operador, valor:f.valor})),
-    assunto_email: etapa.assunto || '',
-    template_blocos: blocos,
+    etapas,
     canais_atendimento: canaisDoProjeto.map(c=>({id:c.id, ordem:0, nome_exibicao:c.label, valor:c.valor, icone:c.icone})),
     conta_email: contaPrincipal ? contaPrincipal.email : '',
   };
@@ -3628,6 +3638,7 @@ function renderTesteProcessando(segundos){
     <div class="stat-row"><div class="stat-box"><div class="num">···</div><div class="label">consultando o CRM</div></div></div>
     <p class="small-note">${aviso}</p>`;
   document.getElementById("btn-enviar-teste").disabled = true;
+  document.getElementById("btn-atualizar-templates").disabled = true;
 }
 function renderTesteErro(erro){
   // Só o texto já em linguagem simples (vindo do n8n) aparece aqui — o motivo/próximo passo já
@@ -3642,31 +3653,61 @@ function renderTesteErro(erro){
     </div>
     <p class="small-note" style="margin-top:10px;">Depois de corrigir, clique em "Testar recorte + template" outra vez.</p>`;
   document.getElementById("btn-enviar-teste").disabled = true;
+  document.getElementById("btn-atualizar-templates").disabled = true;
 }
 function renderTesteConcluido(resultado){
+  // REVISÃO (09/09/2026, pedido da Ana): mostra TODAS as etapas da cadência testadas contra o
+  // mesmo lote, agrupadas por etapa — não só a etapa selecionada no editor. Cada amostra ganha
+  // seu próprio botão "enviar só este"; o botão do rodapé manda todos de uma vez, pra validar a
+  // cadência inteira num só clique quando for o caso.
   testeResultadoAtual = resultado;
-  const amostras = resultado.amostras || [];
+  const etapas = resultado.etapas || [];
+  const totalAmostras = etapas.reduce((s,e)=>s+((e.amostras||[]).length),0);
   let html = `
     <div class="stat-row">
       <div class="stat-box"><div class="num">${resultado.total_registros ?? 0}</div><div class="label">registros no recorte</div></div>
       <div class="stat-box"><div class="num">${resultado.total_emails_validos ?? 0}</div><div class="label">e-mails válidos</div></div>
-      <div class="stat-box"><div class="num">${amostras.length}</div><div class="label">cenário(s) de amostra</div></div>
+      <div class="stat-box"><div class="num">${etapas.length}</div><div class="label">etapa(s) testada(s)</div></div>
     </div>`;
-  if(!amostras.length){
+  if(!totalAmostras){
     html += `<p class="small-note">Nenhum registro com e-mail válido foi encontrado para este filtro — não há amostra pra mostrar (os números acima já refletem o filtro real, mesmo assim).</p>`;
   } else {
-    html += `<p class="small-note" style="margin-bottom:10px;">Amostra(s) real(is) — já renderizada(s) com o template em rascunho da etapa selecionada:</p>`;
-    amostras.forEach(a=>{
-      html += `
-        <div class="sample-card">
-          <b>${a.nome_exibicao||'(sem nome)'}</b> (${a.tipo||''}) — doc. mascarado ${a.documento_mascarado||'—'}, ${a.valor_formatado||''} — assunto: "${a.assunto_email||''}"
-          <iframe class="test-preview-frame" sandbox="" srcdoc="${(a.emailbody||'').replace(/"/g,'&quot;')}"></iframe>
-        </div>`;
+    html += `<p class="small-note" style="margin-bottom:10px;">Amostra(s) real(is) — já renderizada(s) com o template em rascunho de cada etapa da cadência, contra o mesmo lote (sem consultar o CRM de novo por etapa):</p>`;
+    etapas.forEach(etapa=>{
+      html += `<h4 style="margin:16px 0 6px;">Etapa ${etapa.etapa_index+1} — ${etapa.assunto_email||'(sem assunto)'}</h4>`;
+      (etapa.amostras||[]).forEach((a,ai)=>{
+        html += `
+          <div class="sample-card">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+              <div><b>${a.nome_exibicao||'(sem nome)'}</b> (${a.tipo||''}) — doc. mascarado ${a.documento_mascarado||'—'}, ${a.valor_formatado||''}</div>
+              <button class="btn ghost small" type="button" onclick="enviarUmTesteEspecifico(${etapa.etapa_index},${ai})">enviar só este</button>
+            </div>
+            <iframe class="test-preview-frame" sandbox="" srcdoc="${(a.emailbody||'').replace(/"/g,'&quot;')}"></iframe>
+          </div>`;
+      });
     });
-    html += `<p class="small-note">Ao clicar em "Enviar e-mail de teste" abaixo, o(s) e-mail(s) acima saem de verdade para ${TESTE_EMAIL_DESTINO_LABEL} — nunca para os clientes reais deste recorte.</p>`;
+    html += `<p class="small-note">Ao clicar em "Enviar todos os e-mails de teste" abaixo (ou "enviar só este" numa amostra), o(s) e-mail(s) saem de verdade para ${TESTE_EMAIL_DESTINO_LABEL} — nunca para os clientes reais deste recorte.</p>`;
   }
   document.getElementById("test-content").innerHTML = html;
-  document.getElementById("btn-enviar-teste").disabled = !amostras.length;
+  document.getElementById("btn-enviar-teste").disabled = !totalAmostras;
+  document.getElementById("btn-atualizar-templates").disabled = !((resultado.amostras_brutas||[]).length);
+}
+async function enviarTesteUnico(etapaIndex, amostraIndex){
+  try{
+    const resp = await fetch(N8N_BASE_URL + '/webhook/testar-recorte-enviar', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({teste_id: testeAtualId, etapa_index: etapaIndex, amostra_index: amostraIndex})
+    });
+    const j = await resp.json().catch(()=>({}));
+    if(j && j.enviado) return {ok:true};
+    return {ok:false, erro: (j && j.erro) || 'Erro não informado.'};
+  } catch(e){ return {ok:false, erro:String(e.message||e)}; }
+}
+async function enviarUmTesteEspecifico(etapaIndex, amostraIndex){
+  mostrarToast('Enviando e-mail de teste...');
+  const r = await enviarTesteUnico(etapaIndex, amostraIndex);
+  if(r.ok) mostrarToast(`E-mail de teste enviado para ${TESTE_EMAIL_DESTINO_LABEL}.`);
+  else mostrarToast(`Não foi possível enviar. ${r.erro||''}`);
 }
 async function checarStatusTeste(testeId){
   const { data, error } = await db.from('recorte_testes').select('*').eq('id', testeId).maybeSingle();
@@ -3681,20 +3722,23 @@ async function checarStatusTeste(testeId){
 document.getElementById("btn-testar").addEventListener("click", async ()=>{
   const r = recorteAtual();
   if(!r.recorte.view){ mostrarToast('Selecione uma view antes de testar.'); return; }
-  if(etapasSemTemplate().includes(etapaAtual())){ mostrarToast('Configure pelo menos 1 bloco de template nesta etapa antes de testar.'); return; }
   pararPollingTeste();
   testeResultadoAtual = null;
   const testeId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('teste-'+Date.now()+'-'+Math.random().toString(36).slice(2));
   testeAtualId = testeId;
   testeInicioMs = Date.now();
+  const payload = montarPayloadTeste(r, testeId);
+  // REVISÃO 09/09/2026: valida em cima do payload de verdade (todas as etapas da cadência
+  // com template configurado), não só a etapa selecionada no editor no momento do clique.
+  if(!payload.etapas.length){ mostrarToast('Configure pelo menos 1 bloco de template em alguma etapa antes de testar.'); return; }
   const avisoBoletagem = r.tipoAcao === 'email_boletagem'
     ? `<div class="callout-dark" style="margin-bottom:12px;">Este recorte usa boletagem — o motor de boletagem (gerar acordo/boleto) ainda não está implementado. Este teste simula só a parte de e-mail, sem anexo real de boleto.</div>`
     : '';
   document.getElementById("test-content").innerHTML = avisoBoletagem + `<p class="small-note">Iniciando consulta...</p>`;
   document.getElementById("btn-enviar-teste").disabled = true;
+  document.getElementById("btn-atualizar-templates").disabled = true;
   document.getElementById("modal-test").classList.add("open");
   try {
-    const payload = montarPayloadTeste(r, testeId);
     await fetch(N8N_BASE_URL + '/webhook/testar-recorte', {
       method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
     });
@@ -3710,21 +3754,47 @@ document.getElementById("btn-fechar-teste").addEventListener("click", ()=>{
   pararPollingTeste();
   document.getElementById("modal-test").classList.remove("open");
 });
+// REVISÃO (09/09/2026, pedido da Ana): reaproveita o lote/amostras já buscados no CRM (mesmo
+// teste_id) pra re-renderizar TODAS as etapas com os templates ATUAIS - sem consultar o CRM de
+// novo. Útil depois de editar um template e querer revalidar rapidamente, sem esperar de novo
+// uma consulta que pode ser lenta/instável. Só fica habilitado quando já existe um teste
+// concluído nesta sessão (testeResultadoAtual.amostras_brutas preenchido).
+document.getElementById("btn-atualizar-templates").addEventListener("click", async ()=>{
+  if(!testeAtualId || !testeResultadoAtual || !(testeResultadoAtual.amostras_brutas||[]).length){
+    mostrarToast('Rode "Testar recorte + template" pelo menos uma vez antes de atualizar.');
+    return;
+  }
+  const r = recorteAtual();
+  const payload = montarPayloadTeste(r, testeAtualId);
+  if(!payload.etapas.length){ mostrarToast('Configure pelo menos 1 bloco de template em alguma etapa antes de atualizar.'); return; }
+  const btn = document.getElementById("btn-atualizar-templates");
+  btn.disabled = true; const textoOriginal = btn.textContent; btn.textContent = 'Atualizando...';
+  document.getElementById("test-content").innerHTML = `<p class="small-note">Atualizando os templates com o mesmo lote já buscado — sem consultar o CRM de novo...</p>`;
+  document.getElementById("btn-enviar-teste").disabled = true;
+  try {
+    const resp = await fetch(N8N_BASE_URL + '/webhook/testar-recorte-rerender', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    const j = await resp.json().catch(()=>({}));
+    btn.disabled = false; btn.textContent = textoOriginal;
+    if(j && j.ok) renderTesteConcluido(j.resultado || {});
+    else renderTesteErro((j && j.erro) || 'Não foi possível atualizar os templates agora.');
+  } catch(e){
+    btn.disabled = false; btn.textContent = textoOriginal;
+    renderTesteErro('Não foi possível atualizar os templates agora (falha de rede). Tente de novo.');
+  }
+});
 document.getElementById("btn-enviar-teste").addEventListener("click", async ()=>{
-  const amostras = (testeResultadoAtual && testeResultadoAtual.amostras) || [];
-  if(!amostras.length || !testeAtualId) return;
+  const etapas = (testeResultadoAtual && testeResultadoAtual.etapas) || [];
+  const pares = [];
+  etapas.forEach(e=>(e.amostras||[]).forEach((a,ai)=>pares.push([e.etapa_index, ai])));
+  if(!pares.length || !testeAtualId) return;
   const btn = document.getElementById("btn-enviar-teste");
   btn.disabled = true; const textoOriginal = btn.textContent; btn.textContent = 'Enviando...';
   let sucesso = 0, falha = 0, erros = [];
-  for(let i=0;i<amostras.length;i++){
-    try {
-      const resp = await fetch(N8N_BASE_URL + '/webhook/testar-recorte-enviar', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({teste_id: testeAtualId, amostra_index: i})
-      });
-      const j = await resp.json().catch(()=>({}));
-      if(j && j.enviado) sucesso++; else { falha++; if(j && j.erro) erros.push(j.erro); }
-    } catch(e){ falha++; erros.push(String(e.message||e)); }
+  for(const [etapaIndex, amostraIndex] of pares){
+    const r = await enviarTesteUnico(etapaIndex, amostraIndex);
+    if(r.ok) sucesso++; else { falha++; if(r.erro) erros.push(r.erro); }
   }
   btn.disabled = false; btn.textContent = textoOriginal;
   if(sucesso && !falha) mostrarToast(`E-mail(s) de teste enviado(s) (${sucesso}) para ${TESTE_EMAIL_DESTINO_LABEL} — confira sua caixa de entrada.`);
