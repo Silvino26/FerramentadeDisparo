@@ -788,6 +788,7 @@ label.check-canal input{width:auto;height:auto;}
             <select id="recorte-tipo-acao">
               <option value="email">E-mail simples</option>
               <option value="email_boletagem">E-mail + Boletagem (gerar acordo, obter boleto, anexar)</option>
+              <option value="email_boletagem_desconto">E-mail + Boletagem com desconto</option>
             </select>
             <p class="small-note" id="recorte-tipo-acao-nota" style="display:none;">Boletagem: gera acordo, busca o boleto e anexa antes de enviar.</p>
           </div>
@@ -1387,7 +1388,7 @@ async function carregarTudoDoBanco(){
       .map(f=>({campo:f.campo_tecnico, label:f.label, tipo:f.tipo, chave:f.chave||''}));
   });
 
-  const TIPO_ACAO_BANCO_PARA_FRONT = {email_simples:'email', email_boletagem:'email_boletagem'};
+  const TIPO_ACAO_BANCO_PARA_FRONT = {email_simples:'email', email_boletagem:'email_boletagem', email_boletagem_desconto:'email_boletagem_desconto'};
   const novosRecortes = recortesR.data.map(r=>{
     const nomeProjeto = r.projetos?.nome || '';
     const canaisOrdenados = (canaisPorProjetoId[r.projeto_id]||[]).slice().sort((a,b)=>a.ordem-b.ordem);
@@ -1469,7 +1470,7 @@ async function carregarAlertas(){
 // array de filhos sempre vem completo do front (não existe edição parcial de uma linha filha
 // isolada do pai).
 async function salvarRecorteNoBanco(rf){
-  const TIPO_ACAO_FRONT_PARA_BANCO = {email:'email_simples', email_boletagem:'email_boletagem'};
+  const TIPO_ACAO_FRONT_PARA_BANCO = {email:'email_simples', email_boletagem:'email_boletagem', email_boletagem_desconto:'email_boletagem_desconto'};
   const projeto_id = idsProjetoPorNome[rf.projeto];
   if(!projeto_id) throw new Error('Projeto "'+rf.projeto+'" não encontrado no banco — crie o projeto em Configurações antes de salvar o recorte.');
   const view_id = idsViewPorNome[rf.recorte.view];
@@ -2154,6 +2155,12 @@ function duplicarRecorte(id){
 }
 let projetoConfigAtual = null;
 
+// REVISÃO (09/09/2026): "boletagem com desconto" é uma VARIANTE do pipeline de boletagem, não um
+// tipo de ação totalmente à parte — em qualquer lugar da tela que só precisa saber "isso aqui é
+// boletagem" (mostrar aviso, mostrar selo, etc.), usar esta função em vez de comparar só com
+// 'email_boletagem' — assim um novo tipo boletagem futuro não exige caçar cada `=== 'email_boletagem'`
+// espalhado pela tela de novo.
+function ehTipoAcaoBoletagem(tipoAcao){ return tipoAcao === 'email_boletagem' || tipoAcao === 'email_boletagem_desconto'; }
 function recorteAtual(){ return recorteEditDraft; }
 function etapaAtual(){ return recorteAtual().cadencia.etapas[etapaAtualIdx]; }
 function contaNome(id){ const c = contas.find(c=>c.id===id); return c ? c.nome+" ("+c.email+")" : "—"; }
@@ -2331,7 +2338,7 @@ function renderProjetos(){
       <div class="proj-body">
         ${lista.map(r=>`
           <div class="recorte-row">
-            <div class="rname">${r.nomeRecorte}<div class="small-note">${[r.campanha, r.tipoAcao==='email_boletagem'?'Boletagem':null, contasNomes(r.contaIds)].filter(Boolean).join(' · ')}</div></div>
+            <div class="rname">${r.nomeRecorte}<div class="small-note">${[r.campanha, r.tipoAcao==='email_boletagem'?'Boletagem':(r.tipoAcao==='email_boletagem_desconto'?'Boletagem c/ desconto':null), contasNomes(r.contaIds)].filter(Boolean).join(' · ')}</div></div>
             <div>${pillTipo(r.cadencia)}</div>
             <div><span class="pill ${r.status}">${triSvg(r.status==='ativo'?'#299161':'#a15c1a',9)} ${r.status}</span></div>
             <div>${r.proximaExecucao}</div>
@@ -2848,7 +2855,7 @@ document.getElementById("recorte-campanha-select").addEventListener("change", (e
 /* Tipo de ação */
 document.getElementById("recorte-tipo-acao").addEventListener("change", (e)=>{
   recorteAtual().tipoAcao = e.target.value;
-  document.getElementById("recorte-tipo-acao-nota").style.display = e.target.value === "email_boletagem" ? "block" : "none";
+  document.getElementById("recorte-tipo-acao-nota").style.display = ehTipoAcaoBoletagem(e.target.value) ? "block" : "none";
   marcarSujo();
 });
 
@@ -3736,8 +3743,8 @@ async function iniciarTesteCompletoRecorte(){
   // REVISÃO 09/09/2026: valida em cima do payload de verdade (todas as etapas da cadência
   // com template configurado), não só a etapa selecionada no editor no momento do clique.
   if(!payload.etapas.length){ mostrarToast('Configure pelo menos 1 bloco de template em alguma etapa antes de testar.'); return; }
-  const avisoBoletagem = r.tipoAcao === 'email_boletagem'
-    ? `<div class="callout-dark" style="margin-bottom:12px;">Este recorte usa boletagem — o motor de boletagem (gerar acordo/boleto) ainda não está implementado. Este teste simula só a parte de e-mail, sem anexo real de boleto.</div>`
+  const avisoBoletagem = ehTipoAcaoBoletagem(r.tipoAcao)
+    ? `<div class="callout-dark" style="margin-bottom:12px;">Este recorte usa boletagem — este teste (rápido, avulso) simula só a parte de e-mail, sem gerar acordo/boleto de verdade nem anexo real. O disparo real, esse sim, gera o boleto de verdade e anexa antes de enviar.</div>`
     : '';
   document.getElementById("test-content").innerHTML = avisoBoletagem + `<p class="small-note">Iniciando consulta...</p>`;
   document.getElementById("btn-enviar-teste").disabled = true;
@@ -3864,7 +3871,7 @@ function iniciarSessaoEdicaoRecorte(objetoBase, isNew, origemDuplicacao){
   renderContasRecorteEditor();
   popularSelectCampanhas(r.campanha || "");
   document.getElementById("recorte-tipo-acao").value = r.tipoAcao || "email";
-  document.getElementById("recorte-tipo-acao-nota").style.display = (r.tipoAcao === "email_boletagem") ? "block" : "none";
+  document.getElementById("recorte-tipo-acao-nota").style.display = ehTipoAcaoBoletagem(r.tipoAcao) ? "block" : "none";
   document.getElementById("recorte-horario-disparo").value = r.horarioInicioDisparo || "08:45";
 
   renderFilterRows();
@@ -4570,15 +4577,31 @@ const TIPO_CAMPO_LABEL = {texto:"Texto", numero:"Número", valor:"Valor (R$)", d
    completo", outra separa "primeiro nome"). Marcar um campo com uma chave permite que o template
    e as variáveis de e-mail se refiram a um papel estável ("o nome do cliente desta view"), em vez
    de depender do nome técnico exato da coluna. Não é obrigatório preencher. */
-const CHAVES_CAMPO = ["", "nome_cliente", "documento_cliente", "numero_contrato", "numero_titulo", "vencimento", "valor"];
+// REVISÃO (09/09/2026, pedido da Ana): 6 chaves novas, necessárias pra boletagem funcionar em
+// qualquer credor (não só Amil/Vasart) sem tocar em código do motor — cada view nova só precisa
+// mapear seus próprios campos pra essas mesmas chaves aqui em Configurações → Views. O motor (n8n)
+// lê só pela chave, nunca pelo nome técnico da coluna, então uma view nova nunca exige alteração
+// no workflow.
+const CHAVES_CAMPO = [
+  "", "nome_cliente", "documento_cliente", "numero_contrato", "numero_titulo", "numero_parcela",
+  "vencimento", "valor", "valor_atualizado", "dias_atraso", "email_cliente", "telefone",
+  "filial_nome", "codigo_cliente",
+];
 const CHAVE_CAMPO_LABEL = {
   "": "(nenhuma)",
   nome_cliente: "Nome do cliente",
   documento_cliente: "Documento do cliente (CPF/CNPJ)",
   numero_contrato: "Número do contrato",
   numero_titulo: "Número do título/documento",
+  numero_parcela: "Número do documento da parcela (boletagem)",
   vencimento: "Vencimento",
-  valor: "Valor",
+  valor: "Valor (original)",
+  valor_atualizado: "Valor atualizado (boletagem — usado no acordo/boleto)",
+  dias_atraso: "Dias de atraso (boletagem com desconto)",
+  email_cliente: "E-mail do cliente",
+  telefone: "Telefone do cliente",
+  filial_nome: "Nome da filial/unidade",
+  codigo_cliente: "Código do cliente",
 };
 
 let viewsFormSalvarFn = null;
