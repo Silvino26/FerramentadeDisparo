@@ -833,8 +833,8 @@ label.check-canal input{width:auto;height:auto;}
         <p class="small-note" id="template-validacao"></p>
         <div class="footer-actions">
           <button class="btn ghost" id="btn-salvar-rascunho" type="button">Salvar rascunho</button>
-          <button class="btn ghost" id="btn-testar" type="button" title="Consulta o CRM de verdade com o filtro deste recorte — a parte lenta, faça só quando precisar validar o lote.">Testar recorte</button>
-          <button class="btn ghost" id="btn-testar-template" type="button" disabled title="Rode 'Testar recorte' pelo menos uma vez nesta sessão de edição — depois disso, este botão revalida os templates contra o mesmo lote, sem consultar o CRM de novo.">Testar template</button>
+          <button class="btn ghost" id="btn-testar" type="button" title="Consulta o CRM de verdade com o filtro deste recorte e mostra os números do lote (registros, e-mails válidos) — use quando quiser validar o filtro/recorte em si.">Testar recorte</button>
+          <button class="btn ghost" id="btn-testar-template" type="button" title="Testa o(s) template(s) com dados reais. Se já há um lote buscado nesta sessão, reaproveita (sem consultar o CRM de novo); senão, busca um lote na hora.">Testar template</button>
           <button class="btn" id="btn-publicar" type="button">Aprovar e publicar</button>
         </div>
       </div>
@@ -3652,9 +3652,10 @@ function renderTesteErro(erro){
       <b style="display:block;margin-bottom:4px;">Não foi possível concluir o teste</b>
       ${erro}
     </div>
-    <p class="small-note" style="margin-top:10px;">Depois de corrigir, clique em "Testar recorte" outra vez.</p>`;
+    <p class="small-note" style="margin-top:10px;">Depois de corrigir, clique em "Testar recorte" (ou "Testar template") outra vez.</p>`;
   document.getElementById("btn-enviar-teste").disabled = true;
-  document.getElementById("btn-testar-template").disabled = true;
+  // "Testar template" fica habilitado mesmo após um erro — ela pode tentar de novo direto por
+  // ali (pedido da Ana, 09/09/2026: nenhum dos dois botões deve travar o outro).
 }
 function renderTesteConcluido(resultado){
   // REVISÃO (09/09/2026, pedido da Ana): mostra TODAS as etapas da cadência testadas contra o
@@ -3720,7 +3721,10 @@ async function checarStatusTeste(testeId){
   else renderTesteErro(data.erro || 'Erro não informado.');
 }
 
-document.getElementById("btn-testar").addEventListener("click", async ()=>{
+// REVISÃO (09/09/2026, pedido da Ana): extraído do handler de "Testar recorte" pra também poder
+// ser chamado de dentro de "Testar template" quando ainda não existe nenhum lote buscado nesta
+// sessão — ver o handler de btn-testar-template logo abaixo pro porquê.
+async function iniciarTesteCompletoRecorte(){
   const r = recorteAtual();
   if(!r.recorte.view){ mostrarToast('Selecione uma view antes de testar.'); return; }
   pararPollingTeste();
@@ -3750,21 +3754,24 @@ document.getElementById("btn-testar").addEventListener("click", async ()=>{
   }
   testePollTimer = setInterval(()=>checarStatusTeste(testeId), 2500);
   checarStatusTeste(testeId);
-});
+}
+document.getElementById("btn-testar").addEventListener("click", iniciarTesteCompletoRecorte);
 document.getElementById("btn-fechar-teste").addEventListener("click", ()=>{
   pararPollingTeste();
   document.getElementById("modal-test").classList.remove("open");
 });
-// REVISÃO (09/09/2026, pedido da Ana): "Testar template" agora é um botão de topo, irmão de
-// "Testar recorte" — reaproveita o lote/amostras já buscados no CRM (mesmo teste_id) pra
-// re-renderizar TODAS as etapas com os templates ATUAIS, sem consultar o CRM de novo. Útil
-// depois de editar um template e querer revalidar rapidamente, sem esperar de novo uma consulta
-// que pode ser lenta/instável. Só fica habilitado quando já existe um teste concluído nesta
-// sessão de edição (testeResultadoAtual.amostras_brutas preenchido) — ver iniciarSessaoEdicaoRecorte,
-// que zera esse cache ao abrir um recorte diferente, pra não vazar o teste de um recorte pro outro.
+// REVISÃO (09/09/2026, pedido da Ana): ela apontou que não faz sentido "Testar template" ficar
+// bloqueado esperando um clique separado em "Testar recorte" antes — por exemplo, num recorte já
+// conhecido/estável onde só o template mudou, ela só quer testar o template, sem esse passo a
+// mais. Agora o botão resolve sozinho: se já existe um lote buscado nesta sessão (testeResultadoAtual
+// preenchido), só revalida os templates contra ele, sem consultar o CRM de novo (rápido); se ainda
+// não existe nenhum lote nesta sessão de edição, busca um lote de verdade na hora (mesmo caminho de
+// "Testar recorte") — inevitável só na primeira vez, já que validar o template exige dados reais
+// pra preencher as variáveis, mas sem exigir que a pessoa saiba disso ou clique em outro botão antes.
 document.getElementById("btn-testar-template").addEventListener("click", async ()=>{
-  if(!testeAtualId || !testeResultadoAtual || !(testeResultadoAtual.amostras_brutas||[]).length){
-    mostrarToast('Rode "Testar recorte" pelo menos uma vez nesta sessão antes de testar o template.');
+  const temLoteNestaSessao = testeAtualId && testeResultadoAtual && (testeResultadoAtual.amostras_brutas||[]).length;
+  if(!temLoteNestaSessao){
+    await iniciarTesteCompletoRecorte();
     return;
   }
   const r = recorteAtual();
@@ -3835,15 +3842,17 @@ function iniciarSessaoEdicaoRecorte(objetoBase, isNew, origemDuplicacao){
   duplicandoDeId = origemDuplicacao || null;
   // REVISÃO (09/09/2026): o teste (lote buscado no CRM + resultado renderizado) é armazenado em
   // globais de sessão (testeAtualId/testeResultadoAtual) de propósito, pra sobreviver à navegação
-  // dentro da MESMA sessão de edição (trocar de etapa, abrir/fechar painéis). Mas ele não pode
-  // sobreviver à troca de recorte — sem isso, "Testar template" ficaria habilitado com o lote do
-  // recorte anterior ao abrir um recorte diferente. Zera aqui, no único ponto por onde toda
-  // abertura de editor passa (abrirEditor e abrirEditorComRascunho).
+  // dentro da MESMA sessão de edição (trocar de etapa, abrir/fechar painéis) e pra permitir que
+  // "Testar template" reaproveite o lote sem depender de "Testar recorte" ter rodado antes. Mas
+  // esse cache não pode sobreviver à troca de recorte — sem isso, "Testar template" reaproveitaria
+  // o lote do recorte anterior ao abrir um recorte diferente. Zera aqui, no único ponto por onde
+  // toda abertura de editor passa (abrirEditor e abrirEditorComRascunho); o botão continua
+  // habilitado normalmente — se clicado sem lote em cache, ele mesmo busca um na hora.
   pararPollingTeste();
   testeAtualId = null;
   testeResultadoAtual = null;
   document.getElementById("modal-test").classList.remove("open");
-  document.getElementById("btn-testar-template").disabled = true;
+  document.getElementById("btn-testar-template").disabled = false;
   const r = recorteAtual();
   document.getElementById("editor-title").textContent = "Editar recorte — " + r.projeto + " · " + r.nomeRecorte;
   document.getElementById("editor-sub").textContent = contasNomes(r.contaIds) + " · há " + r.diasSemAlteracao + " dias sem alteração";
