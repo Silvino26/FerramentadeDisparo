@@ -1899,6 +1899,19 @@ function operadorLabel(ops, tecnico){
   const found = ops.find(o=>o.tecnico===tecnico);
   return found ? found.label : tecnico;
 }
+// Conversão só de exibição pro <input type="date"> (que exige AAAA-MM-DD) - o valor
+// guardado em f.valor continua no formato DD/MM/AAAA de sempre (o mesmo que já vai pro
+// filtro técnico mandado à Techfy) - evita mudar esse formato sem validar com a Ana se a
+// Techfy aceita ISO também. É só uma conveniência de digitação (seletor de calendário em
+// vez de digitar a data à mão, pedido dela em 09/09/2026).
+function dataBRparaISO(v){
+  const m = String(v||'').match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : '';
+}
+function dataISOparaBR(v){
+  const m = String(v||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '';
+}
 // Monta a condição técnica de UM filtro (campo+operador+valor), incluindo a
 // substituição de "{N}" pro número de dias digitado, nos operadores de janela
 // móvel de data. Espelha exatamente a lógica do nó "Montar filtro técnico" no
@@ -2746,7 +2759,23 @@ function renderFilterRows(){
     const semValor = f.operador === "IS NULL" || f.operador === "IS NOT NULL";
     const valorEmbutido = tipo === "booleano";
     const precisaDias = f.operador && f.operador.indexOf("{N}") !== -1;
-    const placeholderValor = semValor ? "(sem valor)" : precisaDias ? "número de dias (ex.: 19)" : "valor (se aplicável)";
+    // Campo de valor dinâmico conforme o operador escolhido (pedido da Ana, 09/09/2026): sem
+    // valor pra "é nulo"/"não é nulo", número de dias pros operadores de janela móvel de data
+    // ("nos últimos/próximos N dias"), calendário nativo pra comparação direta de data ("=",
+    // "antes de", "depois de" num campo tipo "data") - reduz o risco de digitar a data num
+    // formato que a Techfy não entende. Pra texto/número/valor comuns, continua um campo de
+    // texto livre (um <input type="number"> quebraria valores em R$ com vírgula, ex. "150,01").
+    const ehDataDireta = tipo === "data" && !semValor && !precisaDias;
+    let campoValorHtml;
+    if(semValor || valorEmbutido){
+      campoValorHtml = `<input value="${f.valor||''}" placeholder="${semValor?'(sem valor)':''}" disabled>`;
+    } else if(precisaDias){
+      campoValorHtml = `<input type="number" min="1" step="1" value="${f.valor||''}" placeholder="número de dias (ex.: 19)" onchange="mudarFiltro(${i},'valor',this.value)">`;
+    } else if(ehDataDireta){
+      campoValorHtml = `<input type="date" value="${dataBRparaISO(f.valor)}" onchange="mudarFiltro(${i},'valor', dataISOparaBR(this.value))">`;
+    } else {
+      campoValorHtml = `<input value="${f.valor||''}" placeholder="valor (se aplicável)" onchange="mudarFiltro(${i},'valor',this.value)">`;
+    }
     return `
     <div class="filter-row">
       <select onchange="mudarFiltro(${i},'campo',this.value)">
@@ -2755,7 +2784,7 @@ function renderFilterRows(){
       <select onchange="mudarFiltro(${i},'operador',this.value)">
         ${ops.map(o=>`<option value="${o.tecnico}" ${o.tecnico===f.operador?'selected':''}>${o.label}</option>`).join("")}
       </select>
-      <input value="${f.valor||''}" placeholder="${placeholderValor}" ${(semValor||valorEmbutido)?'disabled':''} onchange="mudarFiltro(${i},'valor',this.value)">
+      ${campoValorHtml}
       <button class="btn ghost small" onclick="removerFiltro(${i})" type="button">remover</button>
     </div>`;
   }).join("");
@@ -3601,10 +3630,17 @@ function renderTesteProcessando(segundos){
   document.getElementById("btn-enviar-teste").disabled = true;
 }
 function renderTesteErro(erro){
+  // Só o texto já em linguagem simples (vindo do n8n) aparece aqui — o motivo/próximo passo já
+  // vem dentro de "erro" (ver "Processar resposta do CRM" no workflow de teste, ajustado em
+  // 09/09/2026 a pedido da Ana: a versão anterior colava o erro técnico bruto da API no meio da
+  // frase, ruim pra quem usa a tela e não é técnico).
   testeResultadoAtual = null;
   document.getElementById("test-content").innerHTML = `
-    <div class="callout-dark red">${erro}</div>
-    <p class="small-note" style="margin-top:10px;">Ajuste o filtro/view do recorte (ou tente de novo, se for instabilidade momentânea) e clique em "Testar recorte + template" outra vez.</p>`;
+    <div class="callout-dark red">
+      <b style="display:block;margin-bottom:4px;">Não foi possível concluir o teste</b>
+      ${erro}
+    </div>
+    <p class="small-note" style="margin-top:10px;">Depois de corrigir, clique em "Testar recorte + template" outra vez.</p>`;
   document.getElementById("btn-enviar-teste").disabled = true;
 }
 function renderTesteConcluido(resultado){
