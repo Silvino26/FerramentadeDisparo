@@ -788,6 +788,7 @@ label.check-canal input{width:auto;height:auto;}
             <select id="recorte-tipo-acao">
               <option value="email">E-mail simples</option>
               <option value="email_boletagem">E-mail + Boletagem (gerar acordo, obter boleto, anexar)</option>
+              <option value="email_boletagem_desconto">E-mail + Boletagem com desconto</option>
             </select>
             <p class="small-note" id="recorte-tipo-acao-nota" style="display:none;">Boletagem: gera acordo, busca o boleto e anexa antes de enviar.</p>
           </div>
@@ -833,8 +834,8 @@ label.check-canal input{width:auto;height:auto;}
         <p class="small-note" id="template-validacao"></p>
         <div class="footer-actions">
           <button class="btn ghost" id="btn-salvar-rascunho" type="button">Salvar rascunho</button>
-          <button class="btn ghost" id="btn-testar" type="button" title="Consulta o CRM de verdade com o filtro deste recorte — a parte lenta, faça só quando precisar validar o lote.">Testar recorte</button>
-          <button class="btn ghost" id="btn-testar-template" type="button" disabled title="Rode 'Testar recorte' pelo menos uma vez nesta sessão de edição — depois disso, este botão revalida os templates contra o mesmo lote, sem consultar o CRM de novo.">Testar template</button>
+          <button class="btn ghost" id="btn-testar" type="button" title="Consulta o CRM de verdade com o filtro deste recorte e mostra os números do lote (registros, e-mails válidos) — use quando quiser validar o filtro/recorte em si.">Testar recorte</button>
+          <button class="btn ghost" id="btn-testar-template" type="button" title="Testa o(s) template(s) com dados reais. Se já há um lote buscado nesta sessão, reaproveita (sem consultar o CRM de novo); senão, busca um lote na hora.">Testar template</button>
           <button class="btn" id="btn-publicar" type="button">Aprovar e publicar</button>
         </div>
       </div>
@@ -1387,7 +1388,7 @@ async function carregarTudoDoBanco(){
       .map(f=>({campo:f.campo_tecnico, label:f.label, tipo:f.tipo, chave:f.chave||''}));
   });
 
-  const TIPO_ACAO_BANCO_PARA_FRONT = {email_simples:'email', email_boletagem:'email_boletagem'};
+  const TIPO_ACAO_BANCO_PARA_FRONT = {email_simples:'email', email_boletagem:'email_boletagem', email_boletagem_desconto:'email_boletagem_desconto'};
   const novosRecortes = recortesR.data.map(r=>{
     const nomeProjeto = r.projetos?.nome || '';
     const canaisOrdenados = (canaisPorProjetoId[r.projeto_id]||[]).slice().sort((a,b)=>a.ordem-b.ordem);
@@ -1469,7 +1470,7 @@ async function carregarAlertas(){
 // array de filhos sempre vem completo do front (não existe edição parcial de uma linha filha
 // isolada do pai).
 async function salvarRecorteNoBanco(rf){
-  const TIPO_ACAO_FRONT_PARA_BANCO = {email:'email_simples', email_boletagem:'email_boletagem'};
+  const TIPO_ACAO_FRONT_PARA_BANCO = {email:'email_simples', email_boletagem:'email_boletagem', email_boletagem_desconto:'email_boletagem_desconto'};
   const projeto_id = idsProjetoPorNome[rf.projeto];
   if(!projeto_id) throw new Error('Projeto "'+rf.projeto+'" não encontrado no banco — crie o projeto em Configurações antes de salvar o recorte.');
   const view_id = idsViewPorNome[rf.recorte.view];
@@ -1896,9 +1897,15 @@ const OPERADORES = {
     {label:"<=", tecnico:"<="},
   ],
 };
-function operadorLabel(ops, tecnico){
-  const found = ops.find(o=>o.tecnico===tecnico);
-  return found ? found.label : tecnico;
+// REVISÃO (09/09/2026, bug real achado pela Ana): o tipo "booleano" tem 2 operadores com o
+// mesmo `tecnico` ("=") — só o `valorFixo` (0 ou 1) diferencia "Não" de "Sim". Por isso não dá
+// pra identificar qual dos dois está selecionado usando só o tecnico — precisa também olhar o
+// valor atual do filtro (`valor`) para desempatar entre os candidatos.
+function operadorLabel(ops, tecnico, valor){
+  const candidatos = ops.filter(o=>o.tecnico===tecnico);
+  if(candidatos.length <= 1) return candidatos[0] ? candidatos[0].label : tecnico;
+  const exato = candidatos.find(o=>o.valorFixo===valor);
+  return (exato||candidatos[0]).label;
 }
 // Conversão só de exibição pro <input type="date"> (que exige AAAA-MM-DD) - o valor
 // guardado em f.valor continua no formato DD/MM/AAAA de sempre (o mesmo que já vai pro
@@ -2154,6 +2161,42 @@ function duplicarRecorte(id){
 }
 let projetoConfigAtual = null;
 
+// REVISÃO (09/09/2026): "boletagem com desconto" é uma VARIANTE do pipeline de boletagem, não um
+// tipo de ação totalmente à parte — em qualquer lugar da tela que só precisa saber "isso aqui é
+// boletagem" (mostrar aviso, mostrar selo, etc.), usar esta função em vez de comparar só com
+// 'email_boletagem' — assim um novo tipo boletagem futuro não exige caçar cada `=== 'email_boletagem'`
+// espalhado pela tela de novo.
+function ehTipoAcaoBoletagem(tipoAcao){ return tipoAcao === 'email_boletagem' || tipoAcao === 'email_boletagem_desconto'; }
+
+// REVISÃO (09/09/2026, pedido da Ana): boletagem só existe pra Amil hoje - qualquer variação
+// futura de projeto da Amil (ex.: "Amil Hospitais", "Amil Operadoras") também deve poder usar,
+// sem precisar mexer em código de novo - por isso o teste é "o nome do projeto contém 'amil'"
+// (sem diferenciar maiúsculas/acentos), em vez de uma lista fixa de nomes exatos. Pra qualquer
+// outro projeto (Vasart Américas, Amil - não, esse é intencional -, Santa Helena, Reclame Aqui,
+// etc.) as opções de boletagem nem aparecem na lista - trava para evitar que alguém selecione
+// por engano e quebre o disparo de um projeto que não tem essa integração.
+function normalizarTextoSimples(v){
+  return String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+}
+function projetoPermiteBoletagem(nomeProjeto){
+  return normalizarTextoSimples(nomeProjeto).includes('amil');
+}
+// Reconstrói as opções do <select> de tipo de ação conforme o projeto - some com as opções de
+// boletagem quando o projeto não é Amil. Devolve o tipoAcao que deve efetivamente ficar
+// selecionado (clampa pra 'email' se o valor atual não é mais uma opção válida pro projeto).
+function popularSelectTipoAcao(nomeProjeto, tipoAcaoAtual){
+  const sel = document.getElementById("recorte-tipo-acao");
+  const podeBoletagem = projetoPermiteBoletagem(nomeProjeto);
+  const opcoes = [{value:'email', label:'E-mail simples'}];
+  if(podeBoletagem){
+    opcoes.push({value:'email_boletagem', label:'E-mail + Boletagem (gerar acordo, obter boleto, anexar)'});
+    opcoes.push({value:'email_boletagem_desconto', label:'E-mail + Boletagem com desconto'});
+  }
+  sel.innerHTML = opcoes.map(o=>`<option value="${o.value}">${o.label}</option>`).join("");
+  const valeSelecionado = opcoes.some(o=>o.value===tipoAcaoAtual) ? tipoAcaoAtual : 'email';
+  sel.value = valeSelecionado;
+  return valeSelecionado;
+}
 function recorteAtual(){ return recorteEditDraft; }
 function etapaAtual(){ return recorteAtual().cadencia.etapas[etapaAtualIdx]; }
 function contaNome(id){ const c = contas.find(c=>c.id===id); return c ? c.nome+" ("+c.email+")" : "—"; }
@@ -2331,7 +2374,7 @@ function renderProjetos(){
       <div class="proj-body">
         ${lista.map(r=>`
           <div class="recorte-row">
-            <div class="rname">${r.nomeRecorte}<div class="small-note">${[r.campanha, r.tipoAcao==='email_boletagem'?'Boletagem':null, contasNomes(r.contaIds)].filter(Boolean).join(' · ')}</div></div>
+            <div class="rname">${r.nomeRecorte}<div class="small-note">${[r.campanha, r.tipoAcao==='email_boletagem'?'Boletagem':(r.tipoAcao==='email_boletagem_desconto'?'Boletagem c/ desconto':null), contasNomes(r.contaIds)].filter(Boolean).join(' · ')}</div></div>
             <div>${pillTipo(r.cadencia)}</div>
             <div><span class="pill ${r.status}">${triSvg(r.status==='ativo'?'#299161':'#a15c1a',9)} ${r.status}</span></div>
             <div>${r.proximaExecucao}</div>
@@ -2777,13 +2820,23 @@ function renderFilterRows(){
     } else {
       campoValorHtml = `<input value="${f.valor||''}" placeholder="valor (se aplicável)" onchange="mudarFiltro(${i},'valor',this.value)">`;
     }
+    // REVISÃO (09/09/2026, bug real achado pela Ana - campo booleano tipo "cor" sim/não "não
+    // ficava ativo"): o <select> de operador usava `o.tecnico` como value/identidade da opção -
+    // pro tipo booleano as 2 opções ("Não"/"Sim") têm o MESMO tecnico ("="), só o valorFixo
+    // difere. Com o value repetido, o navegador (e o código) não conseguia distinguir qual das
+    // duas estava selecionada: `ops.find(o=>o.tecnico===valor)` sempre devolvia a primeira
+    // ("Não"), então escolher "Sim" nunca tinha efeito nenhum - o filtro ficava travado em
+    // "Não" pra sempre. Corrigido usando o ÍNDICE da opção dentro de `ops` como value do
+    // <option> (sempre único, mesmo quando o tecnico se repete) - `mudarFiltro` resolve de volta
+    // pro operador real (`ops[indice]`) em vez de tentar re-achar por tecnico.
+    const opIndexSelecionado = ops.findIndex(o => o.tecnico === f.operador && (o.valorFixo === undefined || o.valorFixo === f.valor));
     return `
     <div class="filter-row">
       <select onchange="mudarFiltro(${i},'campo',this.value)">
         ${catalogo.map(cc=>`<option value="${cc.campo}" ${cc.campo===f.campo?'selected':''}>${cc.label||cc.campo}</option>`).join("")}
       </select>
       <select onchange="mudarFiltro(${i},'operador',this.value)">
-        ${ops.map(o=>`<option value="${o.tecnico}" ${o.tecnico===f.operador?'selected':''}>${o.label}</option>`).join("")}
+        ${ops.map((o,oi)=>`<option value="${oi}" ${oi===opIndexSelecionado?'selected':''}>${o.label}</option>`).join("")}
       </select>
       ${campoValorHtml}
       <button class="btn ghost small" onclick="removerFiltro(${i})" type="button">remover</button>
@@ -2796,25 +2849,30 @@ function renderFilterRows(){
       const tipo = (catalogo.find(x=>x.campo===f.campo)||{}).tipo || "texto";
       const ops = OPERADORES[tipo] || OPERADORES.texto;
       const lbl = (catalogo.find(x=>x.campo===f.campo)||{}).label || f.campo;
-      return lbl+" "+operadorLabel(ops, f.operador)+(f.valor?(" \""+f.valor+"\""):"");
+      return lbl+" "+operadorLabel(ops, f.operador, f.valor)+(f.valor?(" \""+f.valor+"\""):"");
     }).join(" e ") || "(sem filtros)";
 }
 function mudarFiltro(i, campo, valor){
   const r = recorteAtual();
-  r.recorte.filtros[i][campo] = valor;
   const catalogo = FIELD_CATALOGS[r.recorte.view] || [];
   if(campo === "campo"){
+    r.recorte.filtros[i].campo = valor;
     const tipo = (catalogo.find(x=>x.campo===valor)||{}).tipo || "texto";
     const ops = OPERADORES[tipo] || OPERADORES.texto;
     r.recorte.filtros[i].operador = ops[0].tecnico;
     r.recorte.filtros[i].valor = ops[0].valorFixo !== undefined ? ops[0].valorFixo : "";
-  }
-  if(campo === "operador"){
+  } else if(campo === "operador"){
+    // `valor` aqui chega como o ÍNDICE (string) da opção escolhida em `ops` - ver render acima -
+    // não mais o `tecnico` (que pode se repetir, ex. tipo booleano).
     const tipo = (catalogo.find(x=>x.campo===r.recorte.filtros[i].campo)||{}).tipo || "texto";
     const ops = OPERADORES[tipo] || OPERADORES.texto;
-    const escolhido = ops.find(o=>o.tecnico===valor);
-    if(valor === "IS NULL" || valor === "IS NOT NULL") r.recorte.filtros[i].valor = "";
-    else if(escolhido && escolhido.valorFixo !== undefined) r.recorte.filtros[i].valor = escolhido.valorFixo;
+    const escolhido = ops[Number(valor)];
+    if(!escolhido) return;
+    r.recorte.filtros[i].operador = escolhido.tecnico;
+    if(escolhido.tecnico === "IS NULL" || escolhido.tecnico === "IS NOT NULL") r.recorte.filtros[i].valor = "";
+    else if(escolhido.valorFixo !== undefined) r.recorte.filtros[i].valor = escolhido.valorFixo;
+  } else {
+    r.recorte.filtros[i][campo] = valor;
   }
   marcarSujo();
   renderFilterRows();
@@ -2836,8 +2894,19 @@ document.getElementById("btn-config-projeto").addEventListener("click", ()=> abr
 
 /* Projeto: só seleção — criação fica em Configurações */
 document.getElementById("recorte-projeto-select").addEventListener("change", (e)=>{
-  recorteAtual().projeto = e.target.value;
+  const r = recorteAtual();
+  r.projeto = e.target.value;
   document.getElementById("panel-recorte-projeto-label").textContent = "Projeto: " + e.target.value;
+  // REVISÃO (09/09/2026, pedido da Ana): trocar de projeto reconstrói as opções de tipo de ação
+  // (boletagem só existe pra Amil) - se o tipo de ação atual não é mais válido pro projeto novo
+  // (ex.: veio de um recorte de boletagem e a pessoa trocou pra outro projeto), volta pra
+  // "e-mail simples" automaticamente e avisa, em vez de deixar uma seleção inválida escondida.
+  const tipoAcaoAntes = r.tipoAcao;
+  r.tipoAcao = popularSelectTipoAcao(r.projeto, r.tipoAcao);
+  document.getElementById("recorte-tipo-acao-nota").style.display = ehTipoAcaoBoletagem(r.tipoAcao) ? "block" : "none";
+  if(tipoAcaoAntes !== r.tipoAcao){
+    mostrarToast('Boletagem só está disponível para projetos Amil - o tipo de ação deste recorte voltou para "E-mail simples".');
+  }
   marcarSujo();
   renderProjetos();
 });
@@ -2848,7 +2917,7 @@ document.getElementById("recorte-campanha-select").addEventListener("change", (e
 /* Tipo de ação */
 document.getElementById("recorte-tipo-acao").addEventListener("change", (e)=>{
   recorteAtual().tipoAcao = e.target.value;
-  document.getElementById("recorte-tipo-acao-nota").style.display = e.target.value === "email_boletagem" ? "block" : "none";
+  document.getElementById("recorte-tipo-acao-nota").style.display = ehTipoAcaoBoletagem(e.target.value) ? "block" : "none";
   marcarSujo();
 });
 
@@ -3224,6 +3293,21 @@ function aplicarFormatoSelecao(i, campo, tipo){
   document.execCommand(tipo === 'negrito' ? 'bold' : 'italic');
   atualizarBlocoHTML(i, campo, el);
 }
+// REVISÃO (09/09/2026, bug real achado pela Ana): selecionar um trecho GRANDE (ex.: Ctrl+A, ou
+// arrastar o mouse sobre todo o texto de um bloco) e mudar o tamanho/fonte só tinha efeito
+// "linha por linha" - a causa: quando a seleção já contém pedaços formatados anteriormente (um
+// <span style="font-size:..."> aninhado de uma edição mais granular de antes), o novo <span>
+// que envolve a seleção inteira fica por FORA desses spans aninhados - e em CSS, um estilo
+// inline num elemento mais aninhado (o filho) sempre "ganha" do estilo do pai, mesmo que o pai
+// tenha sido aplicado depois. Resultado: o pedaço que já tinha um tamanho antigo continuava com
+// o tamanho antigo, dando a falsa impressão de que só "linha por linha" funcionava (porque cada
+// linha, sozinha, não tinha esse conflito). Corrigido limpando a mesma propriedade CSS em
+// qualquer elemento aninhado dentro do span recém-criado, depois de envolver a seleção -
+// garante que o novo valor realmente vale pra seleção inteira, não só pro que ainda não tinha
+// sido formatado antes.
+function limparEstiloAninhado(container, propriedadeCss){
+  container.querySelectorAll('*').forEach(el => { el.style.removeProperty(propriedadeCss); });
+}
 function aplicarTamanhoSelecao(i, campo, px){
   if(!px) return;
   const el = document.getElementById(`rte-${i}-${campo}`);
@@ -3244,6 +3328,7 @@ function aplicarTamanhoSelecao(i, campo, px){
     span.appendChild(frag);
     range.insertNode(span);
   }
+  limparEstiloAninhado(span, 'font-size');
   sel.removeAllRanges();
   atualizarBlocoHTML(i, campo, el);
 }
@@ -3273,6 +3358,7 @@ function aplicarFonteSelecao(i, campo, fam){
     span.appendChild(frag);
     range.insertNode(span);
   }
+  limparEstiloAninhado(span, 'font-family');
   sel.removeAllRanges();
   atualizarBlocoHTML(i, campo, el);
 }
@@ -3618,6 +3704,13 @@ function montarPayloadTeste(r, testeId){
     assunto: e.assunto || '',
     blocos: (e.blocosRascunho || e.blocosProducao || []).map(b=>blocoFrontParaBanco(b)),
   })).filter(e=>e.blocos.length);
+  // REVISÃO (09/09/2026, pedido da Ana): manda o catálogo de campos (por chave semântica) desta
+  // view junto do payload, reaproveitando o que o front já tem carregado em FIELD_CATALOGS
+  // (Configurações -> Views) — o workflow de teste "Testar recorte" agora resolve os campos de
+  // forma 100% dinâmica via chave, igual ao Worker A.2/B.2 real, em vez de nomes de coluna fixos.
+  const camposDaView = (FIELD_CATALOGS[r.recorte.view] || []).map(f => ({
+    campo_tecnico: f.campo, tipo: f.tipo, chave: f.chave || '',
+  }));
   return {
     teste_id: testeId,
     recorte_id: recorteEditIsNew ? null : r.id,
@@ -3628,6 +3721,7 @@ function montarPayloadTeste(r, testeId){
     etapas,
     canais_atendimento: canaisDoProjeto.map(c=>({id:c.id, ordem:0, nome_exibicao:c.label, valor:c.valor, icone:c.icone})),
     conta_email: contaPrincipal ? contaPrincipal.email : '',
+    campos_view: camposDaView,
   };
 }
 
@@ -3652,9 +3746,10 @@ function renderTesteErro(erro){
       <b style="display:block;margin-bottom:4px;">Não foi possível concluir o teste</b>
       ${erro}
     </div>
-    <p class="small-note" style="margin-top:10px;">Depois de corrigir, clique em "Testar recorte" outra vez.</p>`;
+    <p class="small-note" style="margin-top:10px;">Depois de corrigir, clique em "Testar recorte" (ou "Testar template") outra vez.</p>`;
   document.getElementById("btn-enviar-teste").disabled = true;
-  document.getElementById("btn-testar-template").disabled = true;
+  // "Testar template" fica habilitado mesmo após um erro — ela pode tentar de novo direto por
+  // ali (pedido da Ana, 09/09/2026: nenhum dos dois botões deve travar o outro).
 }
 function renderTesteConcluido(resultado){
   // REVISÃO (09/09/2026, pedido da Ana): mostra TODAS as etapas da cadência testadas contra o
@@ -3720,7 +3815,10 @@ async function checarStatusTeste(testeId){
   else renderTesteErro(data.erro || 'Erro não informado.');
 }
 
-document.getElementById("btn-testar").addEventListener("click", async ()=>{
+// REVISÃO (09/09/2026, pedido da Ana): extraído do handler de "Testar recorte" pra também poder
+// ser chamado de dentro de "Testar template" quando ainda não existe nenhum lote buscado nesta
+// sessão — ver o handler de btn-testar-template logo abaixo pro porquê.
+async function iniciarTesteCompletoRecorte(){
   const r = recorteAtual();
   if(!r.recorte.view){ mostrarToast('Selecione uma view antes de testar.'); return; }
   pararPollingTeste();
@@ -3732,8 +3830,14 @@ document.getElementById("btn-testar").addEventListener("click", async ()=>{
   // REVISÃO 09/09/2026: valida em cima do payload de verdade (todas as etapas da cadência
   // com template configurado), não só a etapa selecionada no editor no momento do clique.
   if(!payload.etapas.length){ mostrarToast('Configure pelo menos 1 bloco de template em alguma etapa antes de testar.'); return; }
-  const avisoBoletagem = r.tipoAcao === 'email_boletagem'
-    ? `<div class="callout-dark" style="margin-bottom:12px;">Este recorte usa boletagem — o motor de boletagem (gerar acordo/boleto) ainda não está implementado. Este teste simula só a parte de e-mail, sem anexo real de boleto.</div>`
+  // REVISÃO (09/09/2026, pedido da Ana): "Testar recorte" agora exercita a pipeline de
+  // boletagem DE VERDADE (mesma chamada real "Gerar Acordo" da TechFy usada em produção) para
+  // validar o processo ponta a ponta — deixou de ser uma simulação só da parte de e-mail. Por
+  // isso o aviso precisa deixar claro que isso GERA UM ACORDO REAL na TechFy, vinculado ao
+  // título real do(s) cliente(s) sorteado(s) como amostra — mesmo sendo só um teste, o e-mail
+  // final continua indo só para o endereço de teste, nunca para o cliente.
+  const avisoBoletagem = ehTipoAcaoBoletagem(r.tipoAcao)
+    ? `<div class="callout-dark" style="margin-bottom:12px;"><b>Atenção:</b> este recorte usa boletagem — este teste chama a API real da TechFy (a mesma do disparo em produção) e <b>gera um acordo/boleto de verdade</b>, vinculado ao título real do(s) cliente(s) sorteado(s) como amostra (até 2, um CPF e um CNPJ). Não é uma simulação. O boleto gerado é anexado de verdade ao e-mail de teste, mas o e-mail em si continua indo só para ${TESTE_EMAIL_DESTINO_LABEL} — nunca para o cliente. Evite rodar o teste repetidas vezes no mesmo recorte sem necessidade, já que cada execução cria um novo acordo na TechFy.</div>`
     : '';
   document.getElementById("test-content").innerHTML = avisoBoletagem + `<p class="small-note">Iniciando consulta...</p>`;
   document.getElementById("btn-enviar-teste").disabled = true;
@@ -3750,21 +3854,24 @@ document.getElementById("btn-testar").addEventListener("click", async ()=>{
   }
   testePollTimer = setInterval(()=>checarStatusTeste(testeId), 2500);
   checarStatusTeste(testeId);
-});
+}
+document.getElementById("btn-testar").addEventListener("click", iniciarTesteCompletoRecorte);
 document.getElementById("btn-fechar-teste").addEventListener("click", ()=>{
   pararPollingTeste();
   document.getElementById("modal-test").classList.remove("open");
 });
-// REVISÃO (09/09/2026, pedido da Ana): "Testar template" agora é um botão de topo, irmão de
-// "Testar recorte" — reaproveita o lote/amostras já buscados no CRM (mesmo teste_id) pra
-// re-renderizar TODAS as etapas com os templates ATUAIS, sem consultar o CRM de novo. Útil
-// depois de editar um template e querer revalidar rapidamente, sem esperar de novo uma consulta
-// que pode ser lenta/instável. Só fica habilitado quando já existe um teste concluído nesta
-// sessão de edição (testeResultadoAtual.amostras_brutas preenchido) — ver iniciarSessaoEdicaoRecorte,
-// que zera esse cache ao abrir um recorte diferente, pra não vazar o teste de um recorte pro outro.
+// REVISÃO (09/09/2026, pedido da Ana): ela apontou que não faz sentido "Testar template" ficar
+// bloqueado esperando um clique separado em "Testar recorte" antes — por exemplo, num recorte já
+// conhecido/estável onde só o template mudou, ela só quer testar o template, sem esse passo a
+// mais. Agora o botão resolve sozinho: se já existe um lote buscado nesta sessão (testeResultadoAtual
+// preenchido), só revalida os templates contra ele, sem consultar o CRM de novo (rápido); se ainda
+// não existe nenhum lote nesta sessão de edição, busca um lote de verdade na hora (mesmo caminho de
+// "Testar recorte") — inevitável só na primeira vez, já que validar o template exige dados reais
+// pra preencher as variáveis, mas sem exigir que a pessoa saiba disso ou clique em outro botão antes.
 document.getElementById("btn-testar-template").addEventListener("click", async ()=>{
-  if(!testeAtualId || !testeResultadoAtual || !(testeResultadoAtual.amostras_brutas||[]).length){
-    mostrarToast('Rode "Testar recorte" pelo menos uma vez nesta sessão antes de testar o template.');
+  const temLoteNestaSessao = testeAtualId && testeResultadoAtual && (testeResultadoAtual.amostras_brutas||[]).length;
+  if(!temLoteNestaSessao){
+    await iniciarTesteCompletoRecorte();
     return;
   }
   const r = recorteAtual();
@@ -3835,15 +3942,17 @@ function iniciarSessaoEdicaoRecorte(objetoBase, isNew, origemDuplicacao){
   duplicandoDeId = origemDuplicacao || null;
   // REVISÃO (09/09/2026): o teste (lote buscado no CRM + resultado renderizado) é armazenado em
   // globais de sessão (testeAtualId/testeResultadoAtual) de propósito, pra sobreviver à navegação
-  // dentro da MESMA sessão de edição (trocar de etapa, abrir/fechar painéis). Mas ele não pode
-  // sobreviver à troca de recorte — sem isso, "Testar template" ficaria habilitado com o lote do
-  // recorte anterior ao abrir um recorte diferente. Zera aqui, no único ponto por onde toda
-  // abertura de editor passa (abrirEditor e abrirEditorComRascunho).
+  // dentro da MESMA sessão de edição (trocar de etapa, abrir/fechar painéis) e pra permitir que
+  // "Testar template" reaproveite o lote sem depender de "Testar recorte" ter rodado antes. Mas
+  // esse cache não pode sobreviver à troca de recorte — sem isso, "Testar template" reaproveitaria
+  // o lote do recorte anterior ao abrir um recorte diferente. Zera aqui, no único ponto por onde
+  // toda abertura de editor passa (abrirEditor e abrirEditorComRascunho); o botão continua
+  // habilitado normalmente — se clicado sem lote em cache, ele mesmo busca um na hora.
   pararPollingTeste();
   testeAtualId = null;
   testeResultadoAtual = null;
   document.getElementById("modal-test").classList.remove("open");
-  document.getElementById("btn-testar-template").disabled = true;
+  document.getElementById("btn-testar-template").disabled = false;
   const r = recorteAtual();
   document.getElementById("editor-title").textContent = "Editar recorte — " + r.projeto + " · " + r.nomeRecorte;
   document.getElementById("editor-sub").textContent = contasNomes(r.contaIds) + " · há " + r.diasSemAlteracao + " dias sem alteração";
@@ -3854,8 +3963,12 @@ function iniciarSessaoEdicaoRecorte(objetoBase, isNew, origemDuplicacao){
   document.getElementById("recorte-view").value = r.recorte.view;
   renderContasRecorteEditor();
   popularSelectCampanhas(r.campanha || "");
-  document.getElementById("recorte-tipo-acao").value = r.tipoAcao || "email";
-  document.getElementById("recorte-tipo-acao-nota").style.display = (r.tipoAcao === "email_boletagem") ? "block" : "none";
+  // REVISÃO (09/09/2026, pedido da Ana): reconstrói as opções de tipo de ação conforme o
+  // projeto deste recorte (boletagem só aparece pra Amil) - se o valor salvo não é mais válido
+  // (ex.: projeto mudou de nome, ou o recorte nunca deveria ter tido boletagem), clampa pra
+  // "e-mail simples" em vez de deixar uma opção inválida/inexistente selecionada.
+  r.tipoAcao = popularSelectTipoAcao(r.projeto, r.tipoAcao || "email");
+  document.getElementById("recorte-tipo-acao-nota").style.display = ehTipoAcaoBoletagem(r.tipoAcao) ? "block" : "none";
   document.getElementById("recorte-horario-disparo").value = r.horarioInicioDisparo || "08:45";
 
   renderFilterRows();
@@ -4561,15 +4674,31 @@ const TIPO_CAMPO_LABEL = {texto:"Texto", numero:"Número", valor:"Valor (R$)", d
    completo", outra separa "primeiro nome"). Marcar um campo com uma chave permite que o template
    e as variáveis de e-mail se refiram a um papel estável ("o nome do cliente desta view"), em vez
    de depender do nome técnico exato da coluna. Não é obrigatório preencher. */
-const CHAVES_CAMPO = ["", "nome_cliente", "documento_cliente", "numero_contrato", "numero_titulo", "vencimento", "valor"];
+// REVISÃO (09/09/2026, pedido da Ana): 6 chaves novas, necessárias pra boletagem funcionar em
+// qualquer credor (não só Amil/Vasart) sem tocar em código do motor — cada view nova só precisa
+// mapear seus próprios campos pra essas mesmas chaves aqui em Configurações → Views. O motor (n8n)
+// lê só pela chave, nunca pelo nome técnico da coluna, então uma view nova nunca exige alteração
+// no workflow.
+const CHAVES_CAMPO = [
+  "", "nome_cliente", "documento_cliente", "numero_contrato", "numero_titulo", "numero_parcela",
+  "vencimento", "valor", "valor_atualizado", "dias_atraso", "email_cliente", "telefone",
+  "filial_nome", "codigo_cliente",
+];
 const CHAVE_CAMPO_LABEL = {
   "": "(nenhuma)",
   nome_cliente: "Nome do cliente",
   documento_cliente: "Documento do cliente (CPF/CNPJ)",
   numero_contrato: "Número do contrato",
   numero_titulo: "Número do título/documento",
+  numero_parcela: "Número do documento da parcela (boletagem)",
   vencimento: "Vencimento",
-  valor: "Valor",
+  valor: "Valor (original)",
+  valor_atualizado: "Valor atualizado (boletagem — usado no acordo/boleto)",
+  dias_atraso: "Dias de atraso (boletagem com desconto)",
+  email_cliente: "E-mail do cliente",
+  telefone: "Telefone do cliente",
+  filial_nome: "Nome da filial/unidade",
+  codigo_cliente: "Código do cliente",
 };
 
 let viewsFormSalvarFn = null;
