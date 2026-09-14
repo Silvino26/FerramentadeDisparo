@@ -257,7 +257,8 @@ body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-famil
 .sidebar-nav button.tab-btn.active{color:var(--green-dark);background:transparent;font-weight:700;}
 .sidebar-nav button.tab-btn.active .nav-icon{stroke:var(--green-dark);}
 .nav-icon{display:none;} /* referência usa nav só com texto — ícones removidos do menu lateral */
-.sidebar-foot{margin-top:auto;padding:12px 18px 18px;border-top:1px solid var(--borde.sidebar-foot #login-usuario-email{display:none!important;}
+.sidebar-foot{margin-top:auto;padding:12px 18px 18px;border-top:1px solid var(--border);}
+.sidebar-foot #login-usuario-email{display:none!important;}
 .sidebar-foot #btn-logout{width:100%;}
 .content-col{flex:1;min-width:0;display:flex;flex-direction:column;}
 header.app-header{
@@ -5524,6 +5525,7 @@ db.auth.onAuthStateChange((event, _session)=>{
 </script>
 
 
+<script>
 /* ── Canvas: flowing sine lines (login screen) ─── */
 (function() {
   const canvas = document.getElementById('auth-canvas');
@@ -5562,6 +5564,7 @@ db.auth.onAuthStateChange((event, _session)=>{
   resize();
   draw();
 })();
+</script>
 
 </body>
 </html>
