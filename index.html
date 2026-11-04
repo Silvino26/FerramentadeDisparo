@@ -62,7 +62,24 @@ const App = window.App = {
   }
   const SUPABASE_URL = 'https://wrkukfaawoovofipmqub.supabase.co';
   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indya3VrZmFhd29vdm9maXBtcXViIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODYzNzQxNjcsImV4cCI6MjEwMTk1MDE2N30.aCzcOGPCdhnTmN7ZTc6xHpdTxBLw68vqtTAnvTMrXlI';
+  const N8N_URL = 'https://n8n.srv1000189.hstgr.cloud';
   const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  /* Gera iniciais a partir do e-mail (ex: ana.silvino@ → "AS") */
+  function emailToName(email) {
+    const local = (email || '').split('@')[0];
+    const parts = local.split('.');
+    if(parts.length >= 2) {
+      return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+    }
+    return local.charAt(0).toUpperCase() + local.slice(1);
+  }
+
+  function makeUser(u) {
+    const role = u.user_metadata?.role || 'operation';
+    const name = u.user_metadata?.full_name || u.user_metadata?.name || emailToName(u.email);
+    return {id: u.id, email: u.email, role, name};
+  }
 
   /* ---- login ---- */
   App.login = async function(body){
@@ -76,13 +93,7 @@ const App = window.App = {
         : error.message;
       throw Object.assign(new Error(msg), {status: 401});
     }
-    const u = data.user;
-    // eslint-disable-next-line no-undef
-    window._supabaseUser = u;
-    // Expõe o usuário no padrão que o restante do shell espera
-    const role = u.user_metadata?.role || 'operation';
-    // Acessa as variáveis fechadas do shell via atribuição direta ao objeto App
-    App._setUser({id: u.id, email: u.email, role});
+    App._setUser(makeUser(data.user));
   };
 
   /* ---- verificar sessão ativa ---- */
@@ -93,9 +104,7 @@ const App = window.App = {
       window.dispatchEvent(new Event('session-expired'));
       throw Object.assign(new Error('Sessão expirada. Entre novamente.'), {status: 401});
     }
-    const u = session.user;
-    const role = u.user_metadata?.role || 'operation';
-    App._setUser({id: u.id, email: u.email, role});
+    App._setUser(makeUser(session.user));
     return {user: App.user};
   };
 
@@ -106,10 +115,106 @@ const App = window.App = {
     App.settings = null;
   };
 
-  /* ---- carregar configurações ---- */
+  /* ---- Mapeamentos de campos (snake_case → camelCase) ---- */
+  const STATUS_LABEL = {active:'Ativo', paused:'Pausado', draft:'Rascunho', pending:'Pendente', inactive:'Inativo'};
+
+  function mapCategoria(c) {
+    return {
+      id: c.id,
+      name: c.nome || c.name || '',
+      daily: c.max_disparos_dia ?? c.daily ?? 0,
+      batch: c.tamanho_lote ?? c.batch ?? 0,
+      emailMin: c.pausa_email_seg_min ?? c.emailMin ?? 0,
+      emailMax: c.pausa_email_seg_max ?? c.emailMax ?? 0,
+      batchMin: c.pausa_lote_seg_min ?? c.batchMin ?? 0,
+      batchMax: c.pausa_lote_seg_max ?? c.batchMax ?? 0,
+      /* compatibilidade com index.html anterior */
+      maxDisparosDia: c.max_disparos_dia ?? 0,
+      tamanhoLote: c.tamanho_lote ?? 0,
+      pausaEmailSeg: [c.pausa_email_seg_min ?? 0, c.pausa_email_seg_max ?? 0],
+      pausaLoteSeg: [c.pausa_lote_seg_min ?? 0, c.pausa_lote_seg_max ?? 0],
+    };
+  }
+
+  function mapConta(a) {
+    return {
+      id: a.id,
+      name: a.nome || a.email || '',
+      email: a.email || '',
+      category: a.categorias_conta?.nome || a.category || '',
+      categoryId: a.categoria_id || null,
+      status: a.status || 'pendente',
+      note: a.motivo_pendencia || a.note || '',
+      slot: a.slot_credencial || null,
+    };
+  }
+
+  function mapProjeto(p) {
+    return {
+      id: p.id,
+      name: p.nome || p.name || '',
+      count: p.count ?? 0,
+      channels: Array.isArray(p.canais_projeto) ? p.canais_projeto.map(ch => ({
+        id: ch.id,
+        name: ch.nome_exibicao || ch.name || '',
+        icon: ch.icone || '',
+        order: ch.ordem ?? 0,
+      })) : [],
+      archived: p.arquivado ?? p.archived ?? false,
+    };
+  }
+
+  function mapCampanha(c) {
+    return {
+      id: c.id,
+      name: c.nome || c.name || '',
+      count: c.count ?? 0,
+    };
+  }
+
+  function mapView(v) {
+    return {
+      id: v.id,
+      name: v.nome_tecnico || v.nome || v.name || '',
+      fields: Array.isArray(v.views_campos) ? v.views_campos.map(f => ({
+        id: f.id,
+        name: f.chave || f.nome || '',
+        label: f.label || f.nome || '',
+        type: f.tipo || 'texto',
+      })) : [],
+      count: v.count ?? 0,
+    };
+  }
+
+  function mapCalendario(b) {
+    return {
+      id: b.id,
+      date: b.data_bloqueio || b.date || '',
+      reason: b.motivo || b.reason || '',
+      all: b.todos_projetos ?? b.all ?? true,
+      projects: Array.isArray(b.calendario_operacional_projetos)
+        ? b.calendario_operacional_projetos.map(p => p.projeto_id)
+        : (Array.isArray(b.projects) ? b.projects : []),
+    };
+  }
+
+  function mapRecorte(r) {
+    return {
+      id: r.id,
+      name: r.nome || r.name || '',
+      projectId: r.projeto_id || r.projectId || null,
+      status: r.status || 'draft',
+      statusLabel: STATUS_LABEL[r.status] || r.status || 'Rascunho',
+      editor: r.editor || {},
+      nextRun: r.horario_inicio_disparo || r.nextRun || null,
+      updatedAt: r.atualizado_em || r.updatedAt || null,
+    };
+  }
+
+  /* ---- carregar configurações (com mapeamento completo) ---- */
   App.loadSettings = async function(){
     const [projetosR, categoriasR, contasR, campanhasR, viewsR, calR] = await Promise.all([
-      db.from('projetos').select('*').order('nome'),
+      db.from('projetos').select('*, canais_projeto(*)').order('nome'),
       db.from('categorias_conta').select('*').order('nome'),
       db.from('contas_envio').select('*, categorias_conta(nome)').order('nome'),
       db.from('campanhas').select('*').order('nome'),
@@ -125,23 +230,312 @@ const App = window.App = {
       if(r.error) throw new Error('Erro ao carregar ' + rotulo + ': ' + r.error.message);
     }
     const data = {
-      accounts:    contasR.data    || [],
-      categories:  categoriasR.data || [],
-      projects:    projetosR.data  || [],
-      campaigns:   campanhasR.data || [],
-      views:       viewsR.data     || [],
-      calendar:    calR.data       || [],
+      accounts:   (contasR.data   || []).map(mapConta),
+      categories: (categoriasR.data || []).map(mapCategoria),
+      projects:   (projetosR.data  || []).map(mapProjeto),
+      campaigns:  (campanhasR.data || []).map(mapCampanha),
+      views:      (viewsR.data     || []).map(mapView),
+      calendar:   (calR.data       || []).map(mapCalendario),
     };
     App.settings = data;
     return data;
   };
 
+  /* ---- roteador de chamadas App.request() ---- */
+  App.request = async function(path, opts = {}){
+    const method = (opts.method || 'GET').toUpperCase();
+    const body   = opts.body;
+
+    /* ---- auth ---- */
+    if(path === '/auth/session') return App.session();
+    if(path === '/auth/login' && method === 'POST') { await App.login(body); return {user: App.user}; }
+    if(path === '/auth/logout' && method === 'POST') { await App.logout(); return {}; }
+    if(path === '/settings') return App.loadSettings();
+    if(path === '/auth/forgot-password' && method === 'POST'){
+      await db.auth.resetPasswordForEmail(body?.email || '');
+      return {message: 'Se o e-mail estiver cadastrado, você receberá as instruções em breve.'};
+    }
+    if(path === '/support'){
+      return {message: 'Entre em contato com o administrador da ferramenta.'};
+    }
+
+    /* ---- recortes (cuts) ---- */
+    if(path === '/cuts' && method === 'GET'){
+      const { data, error } = await db.from('recortes').select('*').order('atualizado_em', {ascending: false});
+      if(error){ console.error('[Supabase] /cuts:', error.message); return {items: []}; }
+      return {items: (data || []).map(mapRecorte)};
+    }
+
+    if(path === '/cuts' && method === 'POST'){
+      const payload = {
+        nome: body.name || body.nome,
+        projeto_id: body.projectId || body.projeto_id,
+        status: body.status || 'draft',
+        editor: body.editor || {},
+        horario_inicio_disparo: body.nextRun || null,
+      };
+      const { data, error } = await db.from('recortes').insert(payload).select().single();
+      if(error) throw new Error('Erro ao criar recorte: ' + error.message);
+      return {item: mapRecorte(data)};
+    }
+
+    // PUT /cuts/:id
+    const putMatch = path.match(/^\/cuts\/([^/]+)$/);
+    if(putMatch && method === 'PUT'){
+      const id = decodeURIComponent(putMatch[1]);
+      const payload = {
+        nome: body.name || body.nome,
+        projeto_id: body.projectId || body.projeto_id,
+        status: body.status,
+        editor: body.editor || {},
+        horario_inicio_disparo: body.nextRun || null,
+        atualizado_em: new Date().toISOString(),
+      };
+      const { data, error } = await db.from('recortes').update(payload).eq('id', id).select().single();
+      if(error) throw new Error('Erro ao salvar recorte: ' + error.message);
+      return {item: mapRecorte(data)};
+    }
+
+    // DELETE /cuts/:id
+    if(putMatch && method === 'DELETE'){
+      const id = decodeURIComponent(putMatch[1]);
+      const { error } = await db.from('recortes').delete().eq('id', id);
+      if(error) throw new Error('Erro ao excluir recorte: ' + error.message);
+      return {};
+    }
+
+    // PATCH /cuts/:id/status
+    const statusMatch = path.match(/^\/cuts\/([^/]+)\/status$/);
+    if(statusMatch && method === 'PATCH'){
+      const id = decodeURIComponent(statusMatch[1]);
+      const newStatus = body?.status;
+      const { data, error } = await db.from('recortes').update({status: newStatus, atualizado_em: new Date().toISOString()}).eq('id', id).select().single();
+      if(error) throw new Error('Erro ao alterar status: ' + error.message);
+      return {item: mapRecorte(data)};
+    }
+
+    // POST /cuts/test → webhook n8n
+    if(path === '/cuts/test' && method === 'POST'){
+      try {
+        const r = await fetch(N8N_URL + '/webhook/testar-recorte', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+        const result = await r.json().catch(() => ({}));
+        if(!r.ok) throw new Error(result.message || 'Erro ao testar recorte no n8n.');
+        return result;
+      } catch(e) {
+        throw new Error('Teste de recorte: ' + e.message);
+      }
+    }
+
+    // POST /cuts/approve
+    if(path === '/cuts/approve' && method === 'POST'){
+      const cut = body?.cut || body;
+      const id = cut?.id;
+      if(!id) throw new Error('ID do recorte não informado.');
+      const { data, error } = await db.from('recortes').update({status: 'active', atualizado_em: new Date().toISOString()}).eq('id', id).select().single();
+      if(error) throw new Error('Erro ao aprovar recorte: ' + error.message);
+      return {item: mapRecorte(data)};
+    }
+
+    // POST /templates/test → webhook n8n
+    if(path === '/templates/test' && method === 'POST'){
+      try {
+        const r = await fetch(N8N_URL + '/webhook/testar-recorte-enviar', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+        const result = await r.json().catch(() => ({}));
+        if(!r.ok) throw new Error(result.message || 'Erro ao enviar teste.');
+        return result;
+      } catch(e) {
+        throw new Error('Teste de template: ' + e.message);
+      }
+    }
+
+    /* ---- histórico ---- */
+    if(path === '/history' && method === 'GET'){
+      try {
+        const { data, error } = await db
+          .from('execucoes')
+          .select('*, recortes(nome, projetos(nome))')
+          .order('criado_em', {ascending: false})
+          .limit(500);
+        if(error || !data) return {items: []};
+        return {
+          items: data.map((e, i) => ({
+            id: e.id || (i + 1),
+            date: (e.data_execucao || e.criado_em || '').slice(0, 10),
+            project: e.recortes?.projetos?.nome || '',
+            cut: e.recortes?.nome || '',
+            total: e.total_registros ?? e.total ?? 0,
+            sent: e.total_disparos ?? e.enviados ?? 0,
+            errors: e.total_erros ?? e.erros ?? 0,
+          }))
+        };
+      } catch(e) {
+        console.warn('[Supabase] /history:', e.message);
+        return {items: []};
+      }
+    }
+
+    /* ---- painel / dashboard ---- */
+    if(path.startsWith('/dashboard')){
+      try {
+        const qs = new URLSearchParams(path.includes('?') ? path.split('?')[1] : '');
+        const projetoId = qs.get('project') || null;
+
+        let recortesQ = db.from('recortes').select('status, projeto_id, projetos(nome)');
+        if(projetoId) recortesQ = recortesQ.eq('projeto_id', projetoId);
+        const { data: recortesData } = await recortesQ;
+
+        const statusCount = {active:0, paused:0};
+        const projectMap = new Map();
+        (recortesData || []).forEach(r => {
+          if(r.status === 'active') statusCount.active++;
+          else if(r.status === 'paused') statusCount.paused++;
+          const pNome = r.projetos?.nome || 'Sem projeto';
+          if(!projectMap.has(pNome)) projectMap.set(pNome, {name: pNome, total: 0});
+          projectMap.get(pNome).total++;
+        });
+
+        const thirtyAgo = new Date(Date.now() - 30*24*60*60*1000).toISOString().slice(0, 10);
+        const { data: exData } = await db
+          .from('execucoes')
+          .select('data_execucao, total_disparos')
+          .gte('data_execucao', thirtyAgo)
+          .order('data_execucao');
+
+        const dailyMap = new Map();
+        let totalSent = 0;
+        (exData || []).forEach(e => {
+          const d = (e.data_execucao || '').slice(0, 10);
+          if(!dailyMap.has(d)) dailyMap.set(d, {date: d, sent: 0});
+          const inc = e.total_disparos ?? 0;
+          dailyMap.get(d).sent += inc;
+          totalSent += inc;
+        });
+
+        return {
+          metrics: {
+            active: statusCount.active,
+            paused: statusCount.paused,
+            stale: (recortesData || []).filter(r => !['active','paused'].includes(r.status)).length,
+            sent: totalSent,
+          },
+          projects: Array.from(projectMap.values()),
+          daily: Array.from(dailyMap.values()),
+        };
+      } catch(e) {
+        console.warn('[Supabase] /dashboard:', e.message);
+        return {metrics:{active:0,paused:0,stale:0,sent:0}, projects:[], daily:[]};
+      }
+    }
+
+    /* ---- configurações CRUD ---- */
+    // PUT/POST /settings/{kind}[/{id}]
+    const settingsMatch = path.match(/^\/settings\/([^/]+)(?:\/([^/]+))?$/);
+    if(settingsMatch && (method === 'PUT' || method === 'POST')){
+      const kind = settingsMatch[1];
+      const id   = settingsMatch[2] ? decodeURIComponent(settingsMatch[2]) : null;
+
+      if(kind === 'categories'){
+        // body = {items: [...categorias]}
+        const items = body?.items || [];
+        for(const c of items){
+          const rec = {
+            id: c.id,
+            nome: c.name || c.nome,
+            max_disparos_dia: c.daily ?? c.maxDisparosDia ?? 0,
+            tamanho_lote: c.batch ?? c.tamanhoLote ?? 0,
+            pausa_email_seg_min: c.emailMin ?? (Array.isArray(c.pausaEmailSeg) ? c.pausaEmailSeg[0] : 0),
+            pausa_email_seg_max: c.emailMax ?? (Array.isArray(c.pausaEmailSeg) ? c.pausaEmailSeg[1] : 0),
+            pausa_lote_seg_min: c.batchMin ?? (Array.isArray(c.pausaLoteSeg) ? c.pausaLoteSeg[0] : 0),
+            pausa_lote_seg_max: c.batchMax ?? (Array.isArray(c.pausaLoteSeg) ? c.pausaLoteSeg[1] : 0),
+          };
+          const { error } = await db.from('categorias_conta').upsert(rec);
+          if(error) throw new Error('Erro ao salvar categoria: ' + error.message);
+        }
+        return {};
+      }
+      if(kind === 'accounts'){
+        const rec = {
+          nome: body.name || body.nome,
+          email: body.email,
+          categoria_id: body.categoryId || null,
+          status: body.status || 'pendente',
+          motivo_pendencia: body.note || null,
+        };
+        if(id) rec.id = id;
+        const { error } = await db.from('contas_envio').upsert(rec);
+        if(error) throw new Error('Erro ao salvar conta: ' + error.message);
+        return {};
+      }
+      if(kind === 'projects'){
+        const rec = { nome: body.name || body.nome, arquivado: body.archived ?? false };
+        if(id) rec.id = id;
+        const { error } = await db.from('projetos').upsert(rec);
+        if(error) throw new Error('Erro ao salvar projeto: ' + error.message);
+        return {};
+      }
+      if(kind === 'campaigns'){
+        const rec = { nome: body.name || body.nome };
+        if(id) rec.id = id;
+        const { error } = await db.from('campanhas').upsert(rec);
+        if(error) throw new Error('Erro ao salvar campanha: ' + error.message);
+        return {};
+      }
+      if(kind === 'calendar'){
+        const rec = {
+          data_bloqueio: body.date,
+          motivo: body.reason,
+          todos_projetos: body.all ?? true,
+        };
+        if(id) rec.id = id;
+        const { data: saved, error } = await db.from('calendario_operacional').upsert(rec).select().single();
+        if(error) throw new Error('Erro ao salvar calendário: ' + error.message);
+        // salvar projetos vinculados se não for para todos
+        if(saved && !body.all && Array.isArray(body.projects)){
+          await db.from('calendario_operacional_projetos').delete().eq('calendario_id', saved.id);
+          if(body.projects.length){
+            await db.from('calendario_operacional_projetos').insert(
+              body.projects.map(pid => ({calendario_id: saved.id, projeto_id: pid}))
+            );
+          }
+        }
+        return {};
+      }
+      // kind desconhecido — ignora silenciosamente
+      console.warn('[Supabase] settings kind desconhecido:', kind);
+      return {};
+    }
+
+    // DELETE /settings/{kind}/{id}
+    if(settingsMatch && method === 'DELETE'){
+      const kind = settingsMatch[1];
+      const id   = settingsMatch[2] ? decodeURIComponent(settingsMatch[2]) : null;
+      if(!id) return {};
+      const TABLE = {accounts:'contas_envio', projects:'projetos', campaigns:'campanhas', views:'views_catalogo', calendar:'calendario_operacional'};
+      const table = TABLE[kind];
+      if(table){
+        const { error } = await db.from(table).delete().eq('id', id);
+        if(error) throw new Error('Erro ao excluir ' + kind + ': ' + error.message);
+      }
+      return {};
+    }
+
+    /* ---- fallback: evita "Não foi possível acessar o serviço" ---- */
+    console.warn('[Supabase] Rota não implementada:', method, path);
+    return {};
+  };
+
   /* Verificar sessão existente ao carregar a página */
   db.auth.getSession().then(({ data: { session } }) => {
     if(session){
-      const u = session.user;
-      const role = u.user_metadata?.role || 'operation';
-      App._setUser({id: u.id, email: u.email, role});
+      App._setUser(makeUser(session.user));
       window.dispatchEvent(new Event('session-restored'));
     }
   });
