@@ -601,9 +601,10 @@ window.addEventListener('message',event=>{
 });
 (async()=>{
   try{
-    const {data:{session:existing}}=await db.auth.getSession();
-    if(!existing){await navigate('login');return;}
-    try{await App.session();await navigate('panel');}catch{await navigate('login');}
+    const {data:{session:existing},error:sessErr}=await db.auth.getSession();
+    if(sessErr||!existing){await navigate('login');return;}
+    App._setUser(makeUser(existing.user));
+    await navigate('panel');
   }catch{await navigate('login');}
 })();
 </script></body></html>
