@@ -98,7 +98,12 @@ const App = window.App = {
 
   /* ---- verificar sessão ativa ---- */
   App.session = async function(){
-    const { data: { session }, error } = await db.auth.getSession();
+    let { data: { session }, error } = await db.auth.getSession();
+    if(error || !session){
+      /* Retry once — Supabase pode estar atualizando o token no background */
+      await new Promise(r=>setTimeout(r,600));
+      ({data:{session},error}=await db.auth.getSession());
+    }
     if(error || !session){
       App._setUser(null);
       window.dispatchEvent(new Event('session-expired'));
@@ -574,7 +579,10 @@ async function navigate(view){
   if(!['login','panel','control','settings','history'].includes(view))return;
   if(view!=='login'&&!App.user) view='login';
   if(view!=='login'&&!App.settings) {
-    try{await App.loadSettings();}catch(error){frames.login.contentWindow.postMessage({type:'app-error',message:error.message},location.origin);return;}
+    try{await App.loadSettings();}catch(error){
+      console.warn('[Shell] loadSettings falhou, prosseguindo com dados vazios:', error.message);
+      if(!App.settings) App.settings={accounts:[],categories:[],projects:[],campaigns:[],views:[],calendar:[]};
+    }
   }
   const key=['login','panel'].includes(view)?view:'workspace';
   await load(key);
@@ -604,7 +612,10 @@ window.addEventListener('message',event=>{
     const {data:{session:existing},error:sessErr}=await db.auth.getSession();
     if(sessErr||!existing){await navigate('login');return;}
     App._setUser(makeUser(existing.user));
-    await navigate('panel');
-  }catch{await navigate('login');}
+  }catch{await navigate('login');return;}
+  try{await navigate('panel');}catch(navErr){
+    console.error('[Shell] Erro ao navegar para o painel, tentando novamente:', navErr?.message);
+    try{await navigate('panel');}catch{await navigate('login');}
+  }
 })();
 </script></body></html>
