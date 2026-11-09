@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ferramenta de Disparo</title><style>html,body{margin:0;height:100%;overflow:hidden;background:#041f17}iframe{position:absolute;inset:0;width:100%;height:100%;border:0}iframe[hidden]{display:none}#vbadge{position:fixed;bottom:8px;right:10px;z-index:9999;background:rgba(3,104,71,.85);color:#fff;font:600 11px/1 monospace;padding:4px 8px;border-radius:4px;pointer-events:none;letter-spacing:.04em}</style><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script></head><body><div id="vbadge">v3 · 09/11</div><iframe id="login" title="Acesso" hidden></iframe><iframe id="panel" title="Painel" hidden></iframe><iframe id="workspace" title="Controle, configurações e histórico" hidden></iframe><script>const config = Object.freeze({base:'/api', pollMs:15000});
+<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ferramenta de Disparo</title><style>html,body{margin:0;height:100%;overflow:hidden;background:#041f17}iframe{position:absolute;inset:0;width:100%;height:100%;border:0}iframe[hidden]{display:none}#vbadge{position:fixed;bottom:8px;right:10px;z-index:9999;background:rgba(3,104,71,.85);color:#fff;font:600 11px/1 monospace;padding:4px 8px;border-radius:4px;pointer-events:none;letter-spacing:.04em}</style><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script></head><body><iframe id="login" title="Acesso" hidden></iframe><iframe id="panel" title="Painel" hidden></iframe><iframe id="workspace" title="Controle, configurações e histórico" hidden></iframe><script>const config = Object.freeze({base:'/api', pollMs:15000});
 let user = null;
 let csrf = '';
 const App = window.App = {
@@ -98,6 +98,8 @@ const App = window.App = {
 
   /* ---- verificar sessão ativa ---- */
   App.session = async function(){
+    /* Atalho: se o shell ja autenticou, retorna imediatamente sem chamar Supabase */
+    if(App.user) return {user: App.user};
     let { data: { session }, error } = await db.auth.getSession();
     if(error || !session){
       /* Retry once — Supabase pode estar atualizando o token no background */
@@ -608,14 +610,16 @@ window.addEventListener('message',event=>{
   }
 });
 (async()=>{
+  /* Usa App.session() para ter acesso ao db e makeUser via closure Supabase */
   try{
-    const {data:{session:existing},error:sessErr}=await db.auth.getSession();
-    if(sessErr||!existing){await navigate('login');return;}
-    App._setUser(makeUser(existing.user));
-  }catch{await navigate('login');return;}
+    await App.session();
+  }catch{
+    /* App.session() ja disparou session-expired -> navigate(login) via listener */
+    return;
+  }
   try{await navigate('panel');}catch(navErr){
     console.error('[Shell] Erro ao navegar para o painel, tentando novamente:', navErr?.message);
     try{await navigate('panel');}catch{await navigate('login');}
   }
 })();
-</script></body></html>
+</script><div id="vbadge">v4 · 09/11</div></body></html>
