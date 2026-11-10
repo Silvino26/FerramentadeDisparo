@@ -673,15 +673,26 @@ const App = window.App = {
           const _nomePrimer = (nome,doc) => { const d=_cleanDoc(doc); if(d.length===14) return nome; return String(nome||'').trim().split(/\s+/)[0]||nome; };
 
           // 2. Construir vars: padrão n8n + mapeamento campo_tecnico→chave (views_campos)
+          const _nomeExib = _nomePrimer(_cli.clientenome, _cli.clientecpfcnpj);
           const _vars = {
-            nome_exibicao: _nomePrimer(_cli.clientenome, _cli.clientecpfcnpj),
+            nome_exibicao: _nomeExib,
+            nome: _nomeExib,            // {{nome}} usado nos templates — alias direto do clientenome
+            nome_cliente: _cli.clientenome || '',  // alias para views_campos chave='nome_cliente'
             documento_mascarado: _maskDoc(_cli.clientecpfcnpj),
             valor_formatado: _fmtValor(_cli.valor_total),
             canais_atendimento: canais_atendimento || [],
           };
+          // Lookup case-insensitive: views_campos usa 'ClienteNome' mas _rawRow tem 'clientenome'
+          const _rowGet = (row, key) => {
+            if(row[key] !== undefined) return row[key];
+            const lk = key.toLowerCase();
+            const k2 = Object.keys(row).find(k => k.toLowerCase() === lk);
+            return k2 !== undefined ? row[k2] : undefined;
+          };
           for(const c of campos_view){
-            if(c.chave && c.campo_tecnico && _rawRow[c.campo_tecnico] !== undefined){
-              _vars[c.chave] = _rawRow[c.campo_tecnico];
+            if(c.chave && c.campo_tecnico){
+              const val = _rowGet(_rawRow, c.campo_tecnico);
+              if(val !== undefined) _vars[c.chave] = val;
             }
           }
 
@@ -792,6 +803,8 @@ const App = window.App = {
           const _simVars = {
             ...mockContato,
             nome_exibicao: mockContato.nome,
+            nome: mockContato.nome,     // {{nome}} nos templates
+            nome_cliente: mockContato.nome,
             documento_mascarado: mockContato.cpf_cnpj || '•••.•••',
             valor_formatado: mockContato.valor_aberto || '-',
             canais_atendimento: [],
