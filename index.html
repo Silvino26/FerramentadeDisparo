@@ -183,11 +183,13 @@ const App = window.App = {
     return {
       id: v.id,
       name: v.nome_tecnico || v.nome || v.name || '',
-      fields: Array.isArray(v.views_campos) ? v.views_campos.map(f => ({
+      fields: Array.isArray(v.views_campos) ? v.views_campos.sort((a,b)=>(a.ordem||0)-(b.ordem||0)).map(f => ({
         id: f.id,
-        name: f.chave || f.nome || '',
-        label: f.label || f.nome || '',
+        technical: f.campo_tecnico || f.chave || '',
+        name: f.campo_tecnico || f.chave || '',
+        label: f.label || f.campo_tecnico || '',
         type: f.tipo || 'texto',
+        key: f.chave || '',
       })) : [],
       count: v.count ?? 0,
     };
@@ -559,6 +561,30 @@ const App = window.App = {
             await db.from('calendario_operacional_projetos').insert(
               body.projects.map(pid => ({calendario_id: saved.id, projeto_id: pid}))
             );
+          }
+        }
+        return {};
+      }
+      if(kind === 'views'){
+        // Salvar view_catalogo + seus campos
+        const rec = { nome_tecnico: body.name || body.nome_tecnico || '' };
+        if(id) rec.id = id;
+        const { data: savedView, error: viewErr } = await db.from('views_catalogo').upsert(rec).select().single();
+        if(viewErr) throw new Error('Erro ao salvar view: ' + viewErr.message);
+        // Substituir todos os campos desta view
+        if(savedView && Array.isArray(body.fields)){
+          await db.from('views_campos').delete().eq('view_id', savedView.id);
+          if(body.fields.length){
+            const campos = body.fields.map((f, idx) => ({
+              view_id: savedView.id,
+              campo_tecnico: f.technical || f.campo_tecnico || f.name || '',
+              label: f.label || '',
+              tipo: f.type || f.tipo || 'texto',
+              ordem: f.ordem ?? idx,
+              chave: f.key || f.chave || null,
+            }));
+            const { error: camposErr } = await db.from('views_campos').insert(campos);
+            if(camposErr) throw new Error('Erro ao salvar campos da view: ' + camposErr.message);
           }
         }
         return {};
