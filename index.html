@@ -332,18 +332,79 @@ const App = window.App = {
         const { error: aErr } = await db.from('recorte_agendamento').insert(agRow);
         if(aErr) console.warn('[Supabase] recorte_agendamento:', aErr.message);
       }
-      // Etapas
+      // Etapas — limpar templates/blocos antigos antes de recriar as etapas
+      {
+        const { data: oldEtapas } = await db.from('recorte_etapas').select('id').eq('recorte_id', cutId);
+        const oldIds = (oldEtapas || []).map(e => e.id);
+        if(oldIds.length) {
+          // templates → cascata via FK; se não houver CASCADE, apaga na mão
+          const { data: oldTpls } = await db.from('templates').select('id').in('etapa_id', oldIds);
+          const oldTplIds = (oldTpls || []).map(t => t.id);
+          if(oldTplIds.length) await db.from('template_blocos').delete().in('template_id', oldTplIds);
+          await db.from('templates').delete().in('etapa_id', oldIds);
+        }
+      }
       await db.from('recorte_etapas').delete().eq('recorte_id', cutId);
       const stages = Array.isArray(editor.stages) ? editor.stages : [];
       if(stages.length) {
-        const rows = stages.map((s, i) => ({
+        const etapaRows = stages.map((s, i) => ({
           recorte_id: cutId,
           numero_etapa: i + 1,
           assunto_email: s.subject || '',
           dias_apos_etapa_anterior: i === 0 ? 0 : (s.delay || 0),
         }));
-        const { error: eErr } = await db.from('recorte_etapas').insert(rows);
+        const { data: etapasData, error: eErr } = await db.from('recorte_etapas').insert(etapaRows).select();
         if(eErr) console.warn('[Supabase] recorte_etapas:', eErr.message);
+
+        // Templates + blocos — salvar para cada etapa que tenha blocos
+        if(etapasData && etapasData.length) {
+          const COR_T = {green:'verde',red:'vermelho',orange:'laranja'};
+          const AL_T  = {left:'esquerda',center:'centro',right:'direita'};
+          function blkToTipo(type){
+            if(type==='title'||type==='subtitle') return 'titulo_subtitulo';
+            if(type==='highlight') return 'caixa_destaque';
+            if(type==='footer')    return 'rodape';
+            if(type==='table')     return 'tabela';
+            return 'texto_livre';
+          }
+          function blkToConteudo(blk){
+            switch(blk.type){
+              case 'title':    return {titulo:blk.fields?.title||'',subtitulo:null};
+              case 'subtitle': return {titulo:'',subtitulo:blk.fields?.subtitle||''};
+              case 'text':     return {html:blk.fields?.text||''};
+              case 'button':   return {html:blk.fields?.button?`<a href="${blk.fields?.buttonLink||'#'}">${blk.fields.button}</a>`:''};
+              case 'channels': return {html:blk.fields?.channels||''};
+              case 'highlight':return {html:blk.fields?.highlight||''};
+              case 'footer':   return {html:blk.fields?.footer||''};
+              case 'table':    return {colunas:(blk.columns||[]).map(c=>c.label),linha_modelo:(blk.columns||[]).map(c=>`{{${c.variable}}}`)};
+              default:         return {};
+            }
+          }
+          for(let i = 0; i < etapasData.length; i++) {
+            const etapa = etapasData[i];
+            const stage = stages[i];
+            const blocks = Array.isArray(stage?.blocks) ? stage.blocks : [];
+            if(!blocks.length) continue;
+            // Upsert template (1 por etapa, versao=rascunho)
+            const { data: tplData, error: tplErr } = await db.from('templates')
+              .insert({ etapa_id: etapa.id, versao: 'rascunho' })
+              .select().single();
+            if(tplErr){ console.warn('[Supabase] templates:', tplErr.message); continue; }
+            const tplId = tplData?.id;
+            if(!tplId) continue;
+            // Inserir blocos
+            const blocoRows = blocks.map((blk, bi) => ({
+              template_id: tplId,
+              ordem: bi,
+              tipo: blkToTipo(blk.type),
+              cor: COR_T[blk.color] || null,
+              alinhamento: AL_T[blk.align] || 'esquerda',
+              conteudo: blkToConteudo(blk),
+            }));
+            const { error: bErr } = await db.from('template_blocos').insert(blocoRows);
+            if(bErr) console.warn('[Supabase] template_blocos:', bErr.message);
+          }
+        }
       }
     }
 
@@ -479,9 +540,32 @@ const App = window.App = {
         // Mapas de conversão
         const COR_MAP = {green:'verde',red:'vermelho',orange:'laranja'};
         const AL_MAP  = {left:'esquerda',center:'centro',right:'direita'};
+        // Tradução de operadores front-end → SQL (Techfy usa SQL direto no filtro)
+        const OP_SQL = {
+          eq:'=', neq:'<>', ne:'<>',
+          gt:'>', gte:'>=',
+          lt:'<', lte:'<=',
+          contains:'LIKE', startswith:'LIKE', endswith:'LIKE',
+          'IS NULL':'IS NULL', 'IS NOT NULL':'IS NOT NULL',
+        };
+        function toSqlFilter(f){
+          const op = OP_SQL[f.operator] || f.operator || '=';
+          const val = f.value;
+          // IS NULL / IS NOT NULL não levam valor
+          if(op === 'IS NULL' || op === 'IS NOT NULL') return {campo_tecnico:f.field, operador:op, valor:''};
+          // LIKE: envolve com % dependendo do operador original
+          let sqlVal = val;
+          if(f.operator === 'contains')   sqlVal = `%${val}%`;
+          if(f.operator === 'startswith') sqlVal = `${val}%`;
+          if(f.operator === 'endswith')   sqlVal = `%${val}`;
+          // Valores numéricos ficam sem aspas; strings levam aspas simples
+          const isNum = sqlVal !== '' && !isNaN(Number(sqlVal));
+          const valFormatado = isNum ? sqlVal : `'${String(sqlVal).replace(/'/g,"''")}'`;
+          return {campo_tecnico:f.field, operador:op, valor:valFormatado};
+        }
 
-        // Transformar filtros
-        const recorte_filtros = (body.filters||[]).map(f=>({campo_tecnico:f.field,operador:f.operator,valor:f.value}));
+        // Transformar filtros (com tradução de operadores para SQL)
+        const recorte_filtros = (body.filters||[]).map(toSqlFilter);
 
         // Transformar etapas e blocos
         const stages = body.editor?.stages || [];
