@@ -654,6 +654,31 @@ const App = window.App = {
         const total      = resultado.total_registros   ?? 0;
         const totalEmail = resultado.total_emails_validos ?? 0;
         const totalCrm   = resultado.total_crm ?? null;
+
+        // Remap amostra keys: campo_tecnico → chave para que o n8n substitua {{nome}} corretamente
+        // Mantém apenas a primeira linha (primeira amostra de cada etapa)
+        if(campos_view.length > 0 && resultado && Array.isArray(resultado.etapas)){
+          const campoMap = {};
+          for(const c of campos_view){
+            if(c.chave && c.campo_tecnico) campoMap[c.campo_tecnico] = c.chave;
+          }
+          if(Object.keys(campoMap).length > 0){
+            const etapasRemapped = resultado.etapas.map(etapa => ({
+              ...etapa,
+              amostras: (etapa.amostras || []).slice(0,1).map(amostra => {
+                const mapped = {};
+                for(const [k,v] of Object.entries(amostra)){
+                  mapped[campoMap[k] || k] = v;
+                }
+                return mapped;
+              }),
+            }));
+            await db.from('recorte_testes')
+              .update({resultado: {...resultado, etapas: etapasRemapped}})
+              .eq('id', testeId);
+          }
+        }
+
         return {
           valid: true,
           validationToken: testeId,
@@ -683,8 +708,31 @@ const App = window.App = {
         // validationToken (gerado em /cuts/test) deve ser enviado como teste_id para o n8n
         const isSimulate = body.simulate === true;
         const mockContato = {nome:'João da Silva',empresa:'Empresa Exemplo',codigo_negociacao:'BP-11015',valor_aberto:'R$ 480,00',status_acordo:'Em aberto',carteira:'Cobrança',data_entrada:'07/07/2026',vencimento:'31/12/2026',cpf_cnpj:'•••.•••',email:'cliente@email.com.br'};
+
+        // Simulação: criar linha real em recorte_testes com contato de exemplo para o n8n processar
+        let simTesteId = null;
+        if(isSimulate){
+          function _genUUID2(){return'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0,v=c==='x'?r:r&0x3|0x8;return v.toString(16);});}
+          simTesteId = (typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():_genUUID2();
+          const mockEtapas = (body.stages || []).map((_,idx)=>({
+            etapa_index: idx,
+            amostras: [mockContato],
+          }));
+          await db.from('recorte_testes').insert({
+            id: simTesteId,
+            recorte_id: null,
+            projeto_nome: 'Simulação',
+            status: 'concluido',
+            resultado: {
+              total_registros: 1,
+              total_emails_validos: 1,
+              etapas: mockEtapas,
+            },
+          });
+        }
+
         const n8nPayload = Object.assign({}, body, {
-          teste_id: isSimulate ? '__simulate__' : (body.validationToken || body.teste_id || null),
+          teste_id: isSimulate ? simTesteId : (body.validationToken || body.teste_id || null),
           simular: isSimulate,
           contato_simulado: isSimulate ? mockContato : null,
         });
