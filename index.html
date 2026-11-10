@@ -298,7 +298,7 @@ const App = window.App = {
         projeto_id: body.projectId || body.projeto_id,
         status: body.status || 'draft',
         editor: body.editor || {},
-        horario_inicio_disparo: body.nextRun || null,
+        ...(body.nextRun ? {horario_inicio_disparo: body.nextRun} : {}),
       };
       let res = await db.from('recortes').insert(payload).select().single();
       if(res.error && res.error.message && res.error.message.toLowerCase().includes('editor')){
@@ -319,7 +319,7 @@ const App = window.App = {
         projeto_id: body.projectId || body.projeto_id,
         status: body.status,
         editor: body.editor || {},
-        horario_inicio_disparo: body.nextRun || null,
+        ...(body.nextRun ? {horario_inicio_disparo: body.nextRun} : {}),
         atualizado_em: new Date().toISOString(),
       };
       let res = await db.from('recortes').update(payload).eq('id', id).select().single();
