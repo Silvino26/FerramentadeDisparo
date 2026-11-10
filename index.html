@@ -655,28 +655,101 @@ const App = window.App = {
         const totalEmail = resultado.total_emails_validos ?? 0;
         const totalCrm   = resultado.total_crm ?? null;
 
-        // Remap amostra keys: campo_tecnico → chave para que o n8n substitua {{nome}} corretamente
-        // Mantém apenas a primeira linha (primeira amostra de cada etapa)
-        if(campos_view.length > 0 && resultado && Array.isArray(resultado.etapas)){
-          const campoMap = {};
+        // ─── Re-render emailbody: corrige {{nome}} + botão (n8n não renderiza botao_acao) ───
+        // O n8n armazena vars={nome_exibicao,documento_mascarado,valor_formatado,canais_atendimento}
+        // sem mapear campo_tecnico→chave, logo {{nome}} fica vazio. E renderizarBloco() do n8n
+        // não tem case 'botao_acao', então botões são silenciosamente descartados.
+        // Solução: o front re-renderiza emailbody a partir dos blocos originais + dados brutos do CRM.
+        const _amostraBruta = resultado.amostras_brutas?.[0];
+        if(_amostraBruta && campos_view.length > 0 && stages.length > 0){
+          const _cli    = _amostraBruta.cliente || {};
+          const _rawRow = (_cli._registros_brutos || [])[0] || {};
+
+          // 1. Funções auxiliares (espelho n8n)
+          const _cleanDoc = v => String(v||'').replace(/\D/g,'');
+          const _maskDoc  = v => { const d=_cleanDoc(v); if(d.length===14) return `${d.slice(0,2)}.${d.slice(2,5)}.***/****-${d.slice(12)}`; if(d.length===11) return `${d.slice(0,3)}.***.***-${d.slice(9)}`; return d ? `${d.slice(0,4)}*****` : ''; };
+          const _fmtValor = v => Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+          const _fmtData  = v => { if(!v) return '-'; const d=new Date(v); return isNaN(d) ? String(v) : d.toLocaleDateString('pt-BR'); };
+          const _nomePrimer = (nome,doc) => { const d=_cleanDoc(doc); if(d.length===14) return nome; return String(nome||'').trim().split(/\s+/)[0]||nome; };
+
+          // 2. Construir vars: padrão n8n + mapeamento campo_tecnico→chave (views_campos)
+          const _vars = {
+            nome_exibicao: _nomePrimer(_cli.clientenome, _cli.clientecpfcnpj),
+            documento_mascarado: _maskDoc(_cli.clientecpfcnpj),
+            valor_formatado: _fmtValor(_cli.valor_total),
+            canais_atendimento: canais_atendimento || [],
+          };
           for(const c of campos_view){
-            if(c.chave && c.campo_tecnico) campoMap[c.campo_tecnico] = c.chave;
+            if(c.chave && c.campo_tecnico && _rawRow[c.campo_tecnico] !== undefined){
+              _vars[c.chave] = _rawRow[c.campo_tecnico];
+            }
           }
-          if(Object.keys(campoMap).length > 0){
-            const etapasRemapped = resultado.etapas.map(etapa => ({
-              ...etapa,
-              amostras: (etapa.amostras || []).slice(0,1).map(amostra => {
-                const mapped = {};
-                for(const [k,v] of Object.entries(amostra)){
-                  mapped[campoMap[k] || k] = v;
-                }
-                return mapped;
-              }),
-            }));
-            await db.from('recorte_testes')
-              .update({resultado: {...resultado, etapas: etapasRemapped}})
-              .eq('id', testeId);
-          }
+
+          // 3. Funções de renderização com botao_acao incluído
+          const _subst = (html,v) => String(html||'').replace(/{{\s*([\w.]+)\s*}}/g,(_,ch) => v[ch]!==undefined && v[ch]!==null ? v[ch] : '');
+          const _CORES = {vermelho:{bg:'#F7D9DD',borda:'#CE2E3C'},laranja:{bg:'#FCE8CF',borda:'#EB9B3C'},verde:{bg:'#DCF1E6',borda:'#299161'},neutro:{bg:'#FFFFFF',borda:'#C9C9C9'}};
+          const _calloutStyle = cor => { const c=_CORES[cor]||_CORES.neutro; return `border-radius:10px;border-left:5px solid ${c.borda};padding:14px 16px;font-size:13px;line-height:20px;margin:0 0 16px;background:${c.bg};`; };
+          const _notasFmt = (_cli.notas||[]).map(nt=>({numero_documento:nt.numero_documento, vencimento_formatado:_fmtData(nt.vencimento), valor_formatado:_fmtValor(nt.valor)}));
+          const _renderBloco = bloco => {
+            const al = bloco.alinhamento==='centro'?'center':bloco.alinhamento==='direita'?'right':'left';
+            switch(bloco.tipo){
+              case 'titulo_subtitulo': {
+                const t = `<h2 style="margin:14px 0 6px;font-size:20px;color:#252525;">${_subst(bloco.conteudo.titulo,_vars)}</h2>`;
+                const s = bloco.conteudo.subtitulo ? `<p style="font-size:13px;line-height:20px;color:#4F4F4F;margin:0 0 12px;">${_subst(bloco.conteudo.subtitulo,_vars)}</p>` : '';
+                return t+s;
+              }
+              case 'texto_livre':
+                return `<p style="font-size:13px;line-height:20px;color:#4F4F4F;margin:0 0 12px;text-align:${al};">${_subst(bloco.conteudo.html,_vars)}</p>`;
+              case 'tabela': {
+                const cab = (bloco.conteudo.colunas||[]).map(c=>`<th style="background:#CE2E3C;color:#fff;padding:9px 12px;text-align:left;">${c}</th>`).join('');
+                const rows = _notasFmt.map(n=>{const lv={..._vars,numero_documento:n.numero_documento,data_vencimento:n.vencimento_formatado,valor_formatado:n.valor_formatado};return`<tr>${(bloco.conteudo.linha_modelo||[]).map(c=>`<td style="padding:9px 12px;border-bottom:1px solid #EAEAEC;">${_subst(c,lv)}</td>`).join('')}</tr>`;}).join('');
+                return `<table style="width:100%;border-collapse:collapse;font-size:12px;margin:0 0 16px;border:1px solid #E0E0E2;border-radius:8px;"><thead><tr>${cab}</tr></thead><tbody>${rows}</tbody></table>`;
+              }
+              case 'caixa_destaque':
+                return `<div style="${_calloutStyle(bloco.cor)}">${_subst(bloco.conteudo.html,_vars)}</div>`;
+              case 'canais_atendimento': {
+                const ch = (bloco.conteudo.canais_selecionados||[]).map(ref=>(_vars.canais_atendimento||[]).find(cc=>cc.id===ref||cc.ordem===ref)).filter(Boolean).map(cc=>`<strong>${cc.icone?cc.icone+' ':''}${cc.nome_exibicao}:</strong> ${cc.valor}`).join('<br>');
+                if(!ch) return '';
+                const intro = bloco.conteudo.texto_introducao ? `<p style="margin:0 0 8px;">${_subst(bloco.conteudo.texto_introducao,_vars)}</p>` : '';
+                return `<div style="${_calloutStyle(bloco.cor||'neutro')}">${intro}${ch}</div>`;
+              }
+              case 'rodape':
+                return `<p style="font-size:11px;color:#777;text-align:${al};">${_subst(bloco.conteudo.html,_vars)}</p>`;
+              case 'botao_acao':
+                // n8n não renderiza botão — o front já montou o HTML completo no conteudo.html
+                return bloco.conteudo?.html ? _subst(bloco.conteudo.html, _vars) : '';
+              default: return '';
+            }
+          };
+
+          // 4. Wrapper montarEmail (réplica exata do n8n)
+          const _stripe = () => `<div style="display:flex;height:7px;"><span style="display:block;width:60%;background:#CE2E3C;"></span><span style="display:block;width:25%;background:#EB9B3C;"></span><span style="display:block;width:15%;background:#299161;"></span></div>`;
+          const _montarEmail = (corpo, nomeR) => {
+            const dh = new Date().toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'});
+            return `<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,.08);overflow:hidden;font-family:Roboto,Arial,sans-serif;color:#252525;">`
+              +_stripe()
+              +`<div style="display:flex;justify-content:space-between;align-items:center;padding:20px 26px 12px;"><div style="font-weight:700;color:#CE2E3C;font-size:15px;">Quatro C</div><div style="font-size:11px;color:#4F4F4F;text-align:right;"><strong style="color:#CE2E3C;">${nomeR||''}</strong><br>TESTE - ${dh}</div></div>`
+              +`<div style="padding:0 26px 22px;">${corpo}</div>`
+              +`<div style="background:#4F4F4F;color:#fff;font-size:10.5px;text-align:center;padding:14px 26px;">Quatro C Assessoria de Cobrança &nbsp;|&nbsp; Grupo Asserth &nbsp;|&nbsp; ESTE É UM E-MAIL DE TESTE</div>`
+              +_stripe()+`</div>`;
+          };
+
+          // 5. Remontar etapas com emailbody correto (1 amostra por etapa, 1ª selecionada)
+          const _etapasCorrigidas = etapas.map(etapa => {
+            const corpo = (etapa.blocos||[]).slice().sort((a,b)=>(a.ordem||0)-(b.ordem||0)).map(_renderBloco).join('\n');
+            const emailbody = _montarEmail(corpo, projeto_nome);
+            const _metaR = Array.isArray(resultado.etapas) ? (resultado.etapas.find(e=>e.etapa_index===etapa.etapa_index)||{}) : {};
+            const _metaA = (_metaR.amostras||[])[0] || {};
+            return {
+              etapa_index: etapa.etapa_index,
+              assunto_email: etapa.assunto || _metaR.assunto_email || '',
+              amostras: [{ ..._metaA, emailbody }],
+            };
+          });
+
+          await db.from('recorte_testes')
+            .update({resultado: {...resultado, etapas: _etapasCorrigidas}})
+            .eq('id', testeId);
         }
 
         return {
@@ -709,19 +782,73 @@ const App = window.App = {
         const isSimulate = body.simulate === true;
         const mockContato = {nome:'João da Silva',empresa:'Empresa Exemplo',codigo_negociacao:'BP-11015',valor_aberto:'R$ 480,00',status_acordo:'Em aberto',carteira:'Cobrança',data_entrada:'07/07/2026',vencimento:'31/12/2026',cpf_cnpj:'•••.•••',email:'cliente@email.com.br'};
 
-        // Simulação: criar linha real em recorte_testes com contato de exemplo para o n8n processar
+        // Simulação: criar linha real em recorte_testes com emailbody renderizado
         let simTesteId = null;
         if(isSimulate){
-          function _genUUID2(){return'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0,v=c==='x'?r:r&0x3|0x8;return v.toString(16);});}
+          const _genUUID2 = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0,v=c==='x'?r:r&0x3|0x8;return v.toString(16);});
           simTesteId = (typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():_genUUID2();
-          const mockEtapas = (body.stages || []).map((_,idx)=>({
-            etapa_index: idx,
-            amostras: [mockContato],
-          }));
+
+          // vars para substituição (mockContato já tem nome, empresa, etc. no formato {{chave}})
+          const _simVars = {
+            ...mockContato,
+            nome_exibicao: mockContato.nome,
+            documento_mascarado: mockContato.cpf_cnpj || '•••.•••',
+            valor_formatado: mockContato.valor_aberto || '-',
+            canais_atendimento: [],
+          };
+          const _simSubst = (html,v) => String(html||'').replace(/{{\s*([\w.]+)\s*}}/g,(_,ch)=>v[ch]!==undefined&&v[ch]!==null?v[ch]:'');
+          const _simStripe = () => `<div style="display:flex;height:7px;"><span style="display:block;width:60%;background:#CE2E3C;"></span><span style="display:block;width:25%;background:#EB9B3C;"></span><span style="display:block;width:15%;background:#299161;"></span></div>`;
+          const _simMontarEmail = (corpo, nomeR) => {
+            const dh = new Date().toLocaleDateString('pt-BR',{timeZone:'America/Sao_Paulo'});
+            return `<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,.08);overflow:hidden;font-family:Roboto,Arial,sans-serif;color:#252525;">`
+              +_simStripe()
+              +`<div style="display:flex;justify-content:space-between;align-items:center;padding:20px 26px 12px;"><div style="font-weight:700;color:#CE2E3C;font-size:15px;">Quatro C</div><div style="font-size:11px;color:#4F4F4F;text-align:right;"><strong style="color:#CE2E3C;">${nomeR||''}</strong><br>TESTE - ${dh}</div></div>`
+              +`<div style="padding:0 26px 22px;">${corpo}</div>`
+              +`<div style="background:#4F4F4F;color:#fff;font-size:10.5px;text-align:center;padding:14px 26px;">Quatro C Assessoria de Cobrança &nbsp;|&nbsp; Grupo Asserth &nbsp;|&nbsp; ESTE É UM E-MAIL DE TESTE</div>`
+              +_simStripe()+`</div>`;
+          };
+          // Mini-renderizador para blocos no formato do editor (type: 'button', 'text', etc.)
+          const _simRenderBlk = blk => {
+            const al = blk.align==='center'?'center':blk.align==='right'?'right':'left';
+            switch(blk.type){
+              case 'title':    return `<h2 style="margin:14px 0 6px;font-size:20px;color:#252525;">${_simSubst(blk.fields?.title||'',_simVars)}</h2>`;
+              case 'subtitle': return `<p style="font-size:13px;line-height:20px;color:#4F4F4F;margin:0 0 12px;">${_simSubst(blk.fields?.subtitle||'',_simVars)}</p>`;
+              case 'text':     return `<p style="font-size:13px;line-height:20px;color:#4F4F4F;margin:0 0 12px;text-align:${al};">${_simSubst(blk.fields?.text||'',_simVars)}</p>`;
+              case 'button': {
+                if(!blk.fields?.button) return '';
+                const bc = blk.color==='orange'?'#f09a2f':blk.color==='green'?'#27ae60':'#d92d3a';
+                return `<div style="text-align:${al};margin:10px 0"><a href="${(blk.fields?.buttonLink||'#').replace(/"/g,'&quot;')}" style="display:inline-block;background:${bc};color:#fff;padding:12px 28px;border-radius:9px;font-weight:850;text-decoration:none;font-size:16px;line-height:1.4">${_simSubst(blk.fields.button,_simVars)}</a></div>`;
+              }
+              case 'highlight': {
+                const hc = {green:{bg:'#DCF1E6',borda:'#299161'},red:{bg:'#F7D9DD',borda:'#CE2E3C'},orange:{bg:'#FCE8CF',borda:'#EB9B3C'}}[blk.color]||{bg:'#FFFFFF',borda:'#C9C9C9'};
+                return `<div style="border-radius:10px;border-left:5px solid ${hc.borda};padding:14px 16px;font-size:13px;line-height:20px;margin:0 0 16px;background:${hc.bg};">${_simSubst(blk.fields?.highlight||'',_simVars)}</div>`;
+              }
+              case 'footer': return `<p style="font-size:11px;color:#777;text-align:${al};">${_simSubst(blk.fields?.footer||'',_simVars)}</p>`;
+              default: return '';
+            }
+          };
+
+          const _editorStages = body.cut?.editor?.stages || [];
+          const _simProjNome  = body.cut?.nome || body.cut?.projectName || 'Simulação';
+          const mockEtapas = (body.stages || []).map(stageIdx => {
+            const stage = _editorStages[stageIdx] || {};
+            const corpo = (stage.blocks||[]).map(_simRenderBlk).join('\n');
+            const emailbody = _simMontarEmail(corpo, _simProjNome);
+            return {
+              etapa_index: stageIdx,
+              amostras: [{
+                ...mockContato,
+                emailbody,
+                assunto_email: stage.subject || '',
+                conta_email: body.email || '',
+              }],
+            };
+          });
+
           await db.from('recorte_testes').insert({
             id: simTesteId,
             recorte_id: null,
-            projeto_nome: 'Simulação',
+            projeto_nome: _simProjNome,
             status: 'concluido',
             resultado: {
               total_registros: 1,
