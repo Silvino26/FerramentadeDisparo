@@ -452,17 +452,110 @@ const App = window.App = {
       return {item: mapRecorte(data)};
     }
 
-    // POST /cuts/test → webhook n8n
+    // POST /cuts/test → webhook n8n (com transformação e polling)
     if(path === '/cuts/test' && method === 'POST'){
       try {
+        // Gerar ID único para este teste
+        function _genUUID(){return'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0,v=c==='x'?r:r&0x3|0x8;return v.toString(16);});}
+        const testeId = (typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():_genUUID();
+
+        // Carregar dados auxiliares do Supabase em paralelo
+        const [projetoR, viewR, canaisR] = await Promise.all([
+          body.projectId ? db.from('projetos').select('nome').eq('id', body.projectId).single() : Promise.resolve({data:null}),
+          body.viewId    ? db.from('views_catalogo').select('nome_tecnico, views_campos(*)').eq('id', body.viewId).single() : Promise.resolve({data:null}),
+          body.projectId ? db.from('canais_projeto').select('*').eq('projeto_id', body.projectId).order('ordem') : Promise.resolve({data:[]}),
+        ]);
+        let conta_email = '';
+        if(Array.isArray(body.accountIds) && body.accountIds.length > 0){
+          const { data: contaD } = await db.from('contas_envio').select('email').eq('id', body.accountIds[0]).single();
+          conta_email = contaD?.email || '';
+        }
+
+        const projeto_nome       = projetoR.data?.nome || '';
+        const view_nome_tecnico  = viewR.data?.nome_tecnico || '';
+        const campos_view        = viewR.data?.views_campos || [];
+        const canais_atendimento = (canaisR.data || []).map(ch=>({id:ch.id,ordem:ch.ordem??0,nome_exibicao:ch.nome_exibicao||'',valor:ch.valor||'',icone:ch.icone||''}));
+
+        // Mapas de conversão
+        const COR_MAP = {green:'verde',red:'vermelho',orange:'laranja'};
+        const AL_MAP  = {left:'esquerda',center:'centro',right:'direita'};
+
+        // Transformar filtros
+        const recorte_filtros = (body.filters||[]).map(f=>({campo_tecnico:f.field,operador:f.operator,valor:f.value}));
+
+        // Transformar etapas e blocos
+        const stages = body.editor?.stages || [];
+        const etapas = stages.map((stage,idx)=>({
+          etapa_index: idx,
+          assunto: stage.subject || '',
+          blocos: (stage.blocks||[]).map((blk,bi)=>{
+            const align = AL_MAP[blk.align] || 'esquerda';
+            switch(blk.type){
+              case 'title':
+                return {tipo:'titulo_subtitulo',conteudo:{titulo:blk.fields?.title||'',subtitulo:null},alinhamento:align,ordem:bi};
+              case 'subtitle':
+                return {tipo:'titulo_subtitulo',conteudo:{titulo:'',subtitulo:blk.fields?.subtitle||''},alinhamento:align,ordem:bi};
+              case 'text':
+                return {tipo:'texto_livre',conteudo:{html:blk.fields?.text||''},alinhamento:align,ordem:bi};
+              case 'button':
+                return {tipo:'texto_livre',conteudo:{html:blk.fields?.button?`<a href="${(blk.fields?.buttonLink||'#').replace(/"/g,'&quot;')}">${blk.fields.button}</a>`:''},alinhamento:align,ordem:bi};
+              case 'channels':
+                return {tipo:'texto_livre',conteudo:{html:blk.fields?.channels||''},alinhamento:align,ordem:bi};
+              case 'highlight':
+                return {tipo:'caixa_destaque',conteudo:{html:blk.fields?.highlight||''},cor:COR_MAP[blk.color]||'neutro',alinhamento:align,ordem:bi};
+              case 'footer':
+                return {tipo:'rodape',conteudo:{html:blk.fields?.footer||''},alinhamento:align,ordem:bi};
+              case 'table':
+                return {tipo:'tabela',conteudo:{colunas:(blk.columns||[]).map(c=>c.label),linha_modelo:(blk.columns||[]).map(c=>`{{${c.variable}}}`)},ordem:bi};
+              default: return null;
+            }
+          }).filter(Boolean),
+        }));
+
+        // Montar payload n8n
+        const n8nPayload = {
+          teste_id: testeId,
+          recorte_id: body.id || null,
+          projeto_nome,
+          view_nome_tecnico,
+          tipo_acao: body.action || body.editor?.mode || '',
+          recorte_filtros,
+          etapas,
+          canais_atendimento,
+          conta_email,
+          campos_view,
+        };
+
+        // Disparar webhook (n8n responde imediatamente com {"recebido":true})
         const r = await fetch(N8N_URL + '/webhook/testar-recorte', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(body),
+          body: JSON.stringify(n8nPayload),
         });
-        const result = await r.json().catch(() => ({}));
-        if(!r.ok) throw new Error(result.message || 'Erro ao testar recorte no n8n.');
-        return result;
+        if(!r.ok){
+          const errBody = await r.json().catch(()=>({}));
+          throw new Error(errBody.message || `n8n retornou status ${r.status}.`);
+        }
+
+        // Polling em recorte_testes até status = concluido | erro (timeout 2min)
+        const deadline = Date.now() + 120000;
+        let resultado = null;
+        while(Date.now() < deadline){
+          await new Promise(res=>setTimeout(res, 2500));
+          const {data:teste} = await db.from('recorte_testes').select('*').eq('id', testeId).maybeSingle();
+          if(!teste) continue;
+          if(teste.status === 'concluido'){ resultado = teste.resultado; break; }
+          if(teste.status === 'erro') throw new Error(teste.erro || 'Erro no processamento do recorte.');
+        }
+        if(!resultado) throw new Error('Tempo limite excedido aguardando o processamento. Tente novamente.');
+
+        const total      = resultado.total_registros   ?? 0;
+        const totalEmail = resultado.total_emails_validos ?? 0;
+        return {
+          valid: true,
+          validationToken: testeId,
+          message: `Processados ${total} registros (${totalEmail} com e-mail válido).`,
+        };
       } catch(e) {
         throw new Error('Teste de recorte: ' + e.message);
       }
